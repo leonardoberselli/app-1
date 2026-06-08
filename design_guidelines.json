@@ -1,0 +1,95 @@
+{
+  "theme": "LIGHT",
+  "archetype": "Archetype 6 (Vibrant Play) with Neo-Brutalist Contrast",
+  "design_philosophy": "High-energy minimalism. The UI must feel physical, active, and youthful. We discard the soft 'SaaS' look in favor of stark contrasts, bold colors, and tactile bento-grid layouts. Every interaction should feel like a physical button press or a card sliding.",
+  "typography": {
+    "primary_heading": {
+      "font": "Outfit or Clash Display",
+      "style": "font-black tracking-tight leading-none text-gray-900"
+    },
+    "secondary_heading": {
+      "font": "Outfit or Clash Display",
+      "style": "font-bold tracking-tight text-gray-900"
+    },
+    "body": {
+      "font": "DM Sans or Manrope",
+      "style": "font-medium text-gray-700 leading-relaxed tracking-normal"
+    },
+    "rules": "Never use generic Sans like Inter for headings. Use massive sizes for key numbers (like participant counts) with tight tracking."
+  },
+  "colors": {
+    "background": "#FDFBF7",
+    "surface": "#FFFFFF",
+    "primary": "#FF4747",
+    "primary_hover": "#E63E3E",
+    "secondary": "#FFE600",
+    "tertiary": "#4ADE80",
+    "text_main": "#0A0A0A",
+    "text_muted": "#525252",
+    "border_hard": "#000000",
+    "border_soft": "#E5E5E5"
+  },
+  "layout_and_spacing": {
+    "system": "Tailwind Scale via NativeWind",
+    "philosophy": "Generous Spacing (p-6, p-8). The Bento Grid Protocol for mobile feeds.",
+    "borders_and_shadows": "Use 'Tactile Neo-Brutalism': 2px solid black borders on primary cards with solid black offset shadows (e.g., shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]) to make them pop.",
+    "radii": "rounded-3xl for main cards, rounded-full for pills/buttons."
+  },
+  "component_rules": {
+    "buttons": "Primary CTA must be vibrant (Primary #FF4747 or Secondary #FFE600) with a 2px black border and a solid black shadow. Text must be uppercase, tracking-widest, font-bold.",
+    "cards": "Activity cards use the Bento layout. High contrast. White background, 2px black border. Include a bold category pill.",
+    "inputs": "Solid off-white/gray background, 2px border on focus, large tap targets (h-14).",
+    "chips": "Horizontal scrollable chips for categories. Active state: black background with white text. Inactive state: white background with black border.",
+    "bottom_nav": "Floating bottom bar, rounded-full, with high-contrast icon active states."
+  },
+  "screens": {
+    "login": {
+      "layout": "Hero image filling the top 60% of the screen. Bottom 40% is a solid white sheet with a massive bold headline ('Pronti a giocare?') and the Google Login button.",
+      "visuals": "Use the social hero image with a subtle black/20 overlay."
+    },
+    "home_feed": {
+      "layout": "Header with 'Esplora' + User Avatar. Sticky category filter chips. Vertical scroll of activity cards.",
+      "card_design": "Show category icon, bold title, location, date/time, and a visual participant progress bar (e.g., 5/10) using vibrant accent colors."
+    },
+    "create_group": {
+      "layout": "Progressive disclosure or single long-scroll form. Massive input text for the Title. Tap-heavy selectors for Time/Date (avoid native spinner if possible, use tactile grid buttons). Sliders for age range."
+    },
+    "group_detail": {
+      "layout": "Hero section with category-specific imagery. Overlapping avatars for participants. Floating sticky bottom bar with the 'Join/Partecipa' button and chat access."
+    },
+    "chat": {
+      "layout": "Standard mobile chat. User's bubbles in Primary (#FF4747), others in light gray. Clean, distraction-free input area."
+    },
+    "profile": {
+      "layout": "Large circular avatar with a 3px black border. Name. Segmented control (Creati vs Partecipati) styled as large tactile tabs. Logout button at the very bottom."
+    }
+  },
+  "image_urls": {
+    "login_hero": {
+      "url": "https://images.unsplash.com/photo-1511988617509-a57c8a288659?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2ODh8MHwxfHNlYXJjaHwzfHx5b3VuZyUyMHBlb3BsZSUyMGhhdmluZyUyMGZ1bnxlbnwwfHx8fDE3ODA5NDE3MzZ8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Group of friends laughing, used for the main landing/login screen."
+    },
+    "category_sports_fallback": {
+      "url": "https://images.unsplash.com/photo-1612872087720-bb876e2e67d1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzh8MHwxfHNlYXJjaHwxfHxncm91cCUyMGZyaWVuZHMlMjBwbGF5aW5nJTIwc3BvcnRzfGVufDB8fHx8MTc4MDk0MTczNnww&ixlib=rb-4.1.0&q=85",
+      "description": "Silhouettes playing sports, used as a fallback header for sports groups."
+    },
+    "category_nightlife_fallback": {
+      "url": "https://images.pexels.com/photos/9005492/pexels-photo-9005492.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Club/Bar environment, used for nightlife/disco groups."
+    },
+    "category_social_fallback": {
+      "url": "https://images.pexels.com/photos/36713391/pexels-photo-36713391.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Friends hanging out, used for general social/bar groups."
+    }
+  },
+  "icons": "Use lucide-react-native. Map specific icons to categories (e.g., Basketball -> basket, Trophy -> calcio, Music -> discoteca, Beer -> bar).",
+  "instructions_to_main_agent": [
+    "This is a React Native Expo app. DO NOT use HTML tags (div, span). Use View, Text, TouchableOpacity, ScrollView, TextInput.",
+    "Apply Tailwind classes using NativeWind standard practices (className).",
+    "CRITICAL: Include `data-testid` on ALL interactive elements (buttons, inputs, tabs, list items) to ensure testability.",
+    "Implement the 'Tactile Neo-Brutalism' aesthetic: Use solid borders and solid shadow offsets on cards to make the UI feel vibrant and physical.",
+    "Never use generic transparent headers over images without a dark overlay or glassmorphism effect to ensure text readability.",
+    "Build a robust bottom tab navigation for Home, Crea, Profilo.",
+    "Ensure all Italian copy is vibrant and youthful (e.g., 'Crea il tuo gruppo!', 'Unisciti alla partita')."
+  ]
+}
