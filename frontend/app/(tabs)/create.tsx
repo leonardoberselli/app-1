@@ -42,6 +42,30 @@ function nextDays(n: number) {
   return days;
 }
 
+function parseCustomDate(text: string): { iso: string | null; error: string | null } {
+  // Accepts DD/MM/YYYY or DD-MM-YYYY
+  const cleaned = text.trim().replace(/-/g, "/");
+  if (!cleaned) return { iso: null, error: null };
+  const m = cleaned.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return { iso: null, error: "Formato: GG/MM/AAAA" };
+  const day = parseInt(m[1], 10);
+  const month = parseInt(m[2], 10);
+  const year = parseInt(m[3], 10);
+  const d = new Date(year, month - 1, day);
+  if (
+    d.getFullYear() !== year ||
+    d.getMonth() !== month - 1 ||
+    d.getDate() !== day
+  ) {
+    return { iso: null, error: "Data non valida" };
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (d < today) return { iso: null, error: "La data è nel passato" };
+  const iso = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return { iso, error: null };
+}
+
 export default function CreateScreen() {
   const { token } = useAuth();
   const router = useRouter();
@@ -53,6 +77,8 @@ export default function CreateScreen() {
   const [location, setLocation] = useState("");
   const [description, setDescription] = useState("");
   const [date, setDate] = useState(dayOptions[0].iso);
+  const [customDateText, setCustomDateText] = useState("");
+  const [dateError, setDateError] = useState<string | null>(null);
   const [time, setTime] = useState("18:00");
   const [minPart, setMinPart] = useState("2");
   const [maxPart, setMaxPart] = useState("8");
@@ -75,6 +101,8 @@ export default function CreateScreen() {
     setMinAge("18");
     setMaxAge("40");
     setDate(dayOptions[0].iso);
+    setCustomDateText("");
+    setDateError(null);
     setTime("18:00");
   };
 
@@ -83,6 +111,7 @@ export default function CreateScreen() {
     if (!title.trim()) return setError("Inserisci un titolo");
     if (!categoryId) return setError("Seleziona una categoria");
     if (isCustom && !customCategory.trim()) return setError("Inserisci la categoria custom");
+    if (dateError) return setError("Correggi la data prima di continuare");
     if (!location.trim()) return setError("Inserisci un luogo");
     const minP = parseInt(minPart, 10);
     const maxP = parseInt(maxPart, 10);
@@ -212,13 +241,17 @@ export default function CreateScreen() {
           contentContainerStyle={styles.catRow}
         >
           {dayOptions.map((d) => {
-            const active = date === d.iso;
+            const active = date === d.iso && !customDateText;
             return (
               <TouchableOpacity
                 key={d.iso}
                 testID={`day-${d.iso}`}
                 activeOpacity={0.85}
-                onPress={() => setDate(d.iso)}
+                onPress={() => {
+                  setDate(d.iso);
+                  setCustomDateText("");
+                  setDateError(null);
+                }}
                 style={[styles.dayChip, active && styles.dayChipActive]}
               >
                 <Text style={[styles.dayName, active && { color: "#FFE600" }]}>{d.day}</Text>
@@ -227,6 +260,39 @@ export default function CreateScreen() {
             );
           })}
         </ScrollView>
+
+        <Text style={styles.subLabel}>…oppure inserisci una data specifica</Text>
+        <TextInput
+          testID="custom-date-input"
+          style={styles.input}
+          value={customDateText}
+          onChangeText={(t) => {
+            // Auto-format: strip non-digits, insert slashes
+            const digits = t.replace(/\D/g, "").slice(0, 8);
+            let formatted = digits;
+            if (digits.length > 4) {
+              formatted = `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+            } else if (digits.length > 2) {
+              formatted = `${digits.slice(0, 2)}/${digits.slice(2)}`;
+            }
+            setCustomDateText(formatted);
+            const parsed = parseCustomDate(formatted);
+            setDateError(parsed.error);
+            if (parsed.iso) setDate(parsed.iso);
+          }}
+          placeholder="GG/MM/AAAA (es. 15/08/2026)"
+          placeholderTextColor="#9A9A9A"
+          keyboardType="number-pad"
+          maxLength={10}
+        />
+        {dateError && (
+          <Text testID="date-error" style={styles.error}>
+            {dateError}
+          </Text>
+        )}
+        {!!customDateText && !dateError && (
+          <Text style={styles.dateHint}>✓ Data selezionata: {customDateText}</Text>
+        )}
 
         <Text style={styles.subLabel}>Orario</Text>
         <ScrollView
@@ -443,6 +509,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   error: { color: "#FF4747", fontWeight: "800", marginTop: 12 },
+  dateHint: { color: "#10B981", fontWeight: "800", marginTop: 6 },
   cta: {
     marginTop: 22,
     backgroundColor: "#FFE600",
