@@ -19,6 +19,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/src/contexts/auth";
 import { api, ApiGroup, ApiMessage } from "@/src/lib/api";
 import { findCategory, CUSTOM_CATEGORY } from "@/src/lib/categories";
+import { formatDate } from "@/src/lib/date";
 
 export default function GroupDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -206,7 +207,7 @@ export default function GroupDetail() {
             <View style={styles.infoRow}>
               <Ionicons name="calendar" size={18} color="#FF4747" />
               <Text style={styles.infoText}>
-                {group.date} · ore {group.time}
+                {formatDate(group.date)} · ore {group.time}
               </Text>
             </View>
             <View style={styles.infoRow}>

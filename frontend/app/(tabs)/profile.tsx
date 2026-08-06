@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/src/contexts/auth";
 import { api, ApiGroup } from "@/src/lib/api";
 import { findCategory, CUSTOM_CATEGORY } from "@/src/lib/categories";
+import { formatDate } from "@/src/lib/date";
 
 type Tab = "created" | "joined";
 
@@ -74,7 +75,7 @@ export default function ProfileScreen() {
             {g.title}
           </Text>
           <Text style={styles.itemMeta}>
-            {g.date} · {g.time} · {g.participants.length}/{g.max_participants}
+            {formatDate(g.date)} · {g.time} · {g.participants.length}/{g.max_participants}
           </Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color="#0A0A0A" />

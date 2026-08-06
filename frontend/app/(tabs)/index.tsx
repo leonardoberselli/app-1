@@ -17,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/src/contexts/auth";
 import { api, ApiGroup } from "@/src/lib/api";
 import { CATEGORIES, CUSTOM_CATEGORY, findCategory } from "@/src/lib/categories";
+import { formatDate } from "@/src/lib/date";
 
 const ALL_FILTER = { id: "all", label: "Tutti", emoji: "✨", color: "#0A0A0A" };
 
@@ -95,7 +96,7 @@ export default function HomeScreen() {
         <View style={styles.metaRow}>
           <Ionicons name="calendar" size={16} color="#525252" />
           <Text style={styles.metaText}>
-            {item.date} · {item.time}
+            {formatDate(item.date)} · {item.time}
           </Text>
         </View>
 
