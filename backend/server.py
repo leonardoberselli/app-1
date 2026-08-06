@@ -33,7 +33,17 @@ class User(BaseModel):
     email: str
     name: str
     picture: Optional[str] = None
+    gender: Optional[Literal["male", "female", "other"]] = None
+    age: Optional[int] = None
+    profile_complete: bool = False
     created_at: datetime
+
+
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    picture: Optional[str] = None  # base64 data URI or URL
+    gender: Optional[Literal["male", "female", "other"]] = None
+    age: Optional[int] = Field(default=None, ge=0, le=120)
 
 
 class SessionRequest(BaseModel):
@@ -149,11 +159,12 @@ async def auth_session(req: SessionRequest):
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
         user_id = existing["user_id"]
-        await db.users.update_one(
-            {"user_id": user_id},
-            {"$set": {"name": name, "picture": picture}},
-        )
-        user_doc = {**existing, "name": name, "picture": picture}
+        # Only update name from Google; keep custom picture if user already set one.
+        updates = {"name": name}
+        if not existing.get("picture"):
+            updates["picture"] = picture
+        await db.users.update_one({"user_id": user_id}, {"$set": updates})
+        user_doc = {**existing, **updates}
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         user_doc = {
@@ -161,6 +172,9 @@ async def auth_session(req: SessionRequest):
             "email": email,
             "name": name,
             "picture": picture,
+            "gender": None,
+            "age": None,
+            "profile_complete": False,
             "created_at": _now(),
         }
         await db.users.insert_one(dict(user_doc))
@@ -182,6 +196,32 @@ async def auth_session(req: SessionRequest):
 @api_router.get("/auth/me", response_model=User)
 async def auth_me(user: User = Depends(get_current_user)):
     return user
+
+
+@api_router.patch("/auth/me", response_model=User)
+async def auth_update_me(payload: ProfileUpdate, user: User = Depends(get_current_user)):
+    updates: dict = {}
+    if payload.name is not None:
+        n = payload.name.strip()
+        if n:
+            updates["name"] = n
+    if payload.picture is not None:
+        updates["picture"] = payload.picture
+    if payload.gender is not None:
+        updates["gender"] = payload.gender
+    if payload.age is not None:
+        updates["age"] = payload.age
+    if updates:
+        await db.users.update_one({"user_id": user.user_id}, {"$set": updates})
+    # Recompute profile_complete flag
+    fresh = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    complete = bool(fresh.get("gender")) and fresh.get("age") is not None and bool(fresh.get("picture"))
+    if fresh.get("profile_complete") != complete:
+        await db.users.update_one(
+            {"user_id": user.user_id}, {"$set": {"profile_complete": complete}}
+        )
+        fresh["profile_complete"] = complete
+    return User(**fresh)
 
 
 @api_router.post("/auth/logout")

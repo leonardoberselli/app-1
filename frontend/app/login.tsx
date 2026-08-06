@@ -18,7 +18,7 @@ export default function LoginScreen() {
   const router = useRouter();
 
   if (user && !loading) {
-    router.replace("/(tabs)");
+    router.replace("/");
   }
 
   const handleSignIn = async () => {

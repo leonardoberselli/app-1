@@ -156,7 +156,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [persistToken, token]);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, token, loading, signIn, signOut, setUser }}>
       {children}
     </AuthContext.Provider>
   );

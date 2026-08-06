@@ -10,8 +10,13 @@ export default function Index() {
 
   useEffect(() => {
     if (loading) return;
-    if (user) router.replace("/(tabs)");
-    else router.replace("/login");
+    if (!user) {
+      router.replace("/login");
+    } else if (!user.profile_complete) {
+      router.replace("/profile-edit?mode=onboarding");
+    } else {
+      router.replace("/(tabs)");
+    }
   }, [loading, user, router]);
 
   return (

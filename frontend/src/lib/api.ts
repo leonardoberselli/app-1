@@ -5,6 +5,9 @@ export type ApiUser = {
   email: string;
   name: string;
   picture?: string | null;
+  gender?: "male" | "female" | "other" | null;
+  age?: number | null;
+  profile_complete?: boolean;
   created_at: string;
 };
 
@@ -71,6 +74,10 @@ export const api = {
       body: { session_id },
     }),
   me: (token: string) => request<ApiUser>("/auth/me", { token }),
+  updateProfile: (
+    token: string,
+    payload: { name?: string; picture?: string; gender?: string; age?: number },
+  ) => request<ApiUser>("/auth/me", { method: "PATCH", body: payload, token }),
   logout: (token: string) => request<{ ok: boolean }>("/auth/logout", { method: "POST", token }),
 
   listGroups: (category?: string, q?: string) => {

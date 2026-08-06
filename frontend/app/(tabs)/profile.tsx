@@ -102,6 +102,31 @@ export default function ProfileScreen() {
           )}
           <Text style={styles.name}>{user?.name}</Text>
           <Text style={styles.email}>{user?.email}</Text>
+
+          <View style={styles.metaRow}>
+            {user?.gender && (
+              <View style={styles.metaPill}>
+                <Text style={styles.metaPillText}>
+                  {user.gender === "male" ? "👨 Uomo" : user.gender === "female" ? "👩 Donna" : "🌈 Altro"}
+                </Text>
+              </View>
+            )}
+            {user?.age != null && (
+              <View style={styles.metaPill}>
+                <Text style={styles.metaPillText}>🎂 {user.age} anni</Text>
+              </View>
+            )}
+          </View>
+
+          <TouchableOpacity
+            testID="edit-profile-button"
+            activeOpacity={0.85}
+            onPress={() => router.push("/profile-edit")}
+            style={styles.editBtn}
+          >
+            <Ionicons name="create" size={16} color="#0A0A0A" />
+            <Text style={styles.editBtnText}>Modifica profilo</Text>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.tabs}>
@@ -182,6 +207,29 @@ const styles = StyleSheet.create({
   avatarFallback: { backgroundColor: "#FFE600", alignItems: "center", justifyContent: "center" },
   name: { fontSize: 24, fontWeight: "900", color: "#0A0A0A" },
   email: { fontSize: 14, color: "#525252", fontWeight: "600" },
+  metaRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8, justifyContent: "center" },
+  metaPill: {
+    backgroundColor: "#FFE600",
+    borderWidth: 2,
+    borderColor: "#000",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  metaPillText: { fontWeight: "800", color: "#0A0A0A" },
+  editBtn: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#FFF",
+    borderWidth: 2,
+    borderColor: "#0A0A0A",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  editBtnText: { fontWeight: "900", color: "#0A0A0A", letterSpacing: 0.5 },
   tabs: {
     flexDirection: "row",
     marginTop: 20,
