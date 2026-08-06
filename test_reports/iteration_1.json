@@ -1,0 +1,48 @@
+{
+  "summary": "Backend-only testing for new multi-provider auth endpoints of GroupUp. Created pytest suite covering signup (happy/duplicate/short-pw), login (unverified/wrong-pw/nonexistent/post-verify), verify-email (invalid/valid via seeded auth_tokens), /auth/me (auth+unauth), password reset (request+confirm invalid+valid, verifying old sessions revoked and login with new password), Google session (invalid), Apple (missing+bogus JWT), groups (list unauth allowed, POST unauth 401), and Mongo indexes (users.email unique, users.apple_sub sparse unique, user_sessions.expires_at TTL, auth_tokens.expires_at TTL). Emergent email integration verified via backend logs (multiple 202 Accepted responses).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/auth/confirm-reset",
+        "issue": "Error message on invalid/expired token is 'Token non valido o scaduto' whereas review request states expected message is 'Link non valido o già usato' pattern. Not a bug, but naming is inconsistent with the verify-email invalid message; still returns 400 as required."
+      },
+      {
+        "endpoint": "GET /api/groups",
+        "issue": "Endpoint is fully public (no auth required). Confirmed per PRD but worth double-checking product intent (feed may leak group details to unauthenticated visitors)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Consider tightening error text for /api/auth/confirm-reset to match the review-spec's '400 Link non valido o già usato' wording for consistency with /api/auth/verify-email.",
+    "Optional: confirm product intent that GET /api/groups is publicly readable (currently returns full group docs to unauthenticated callers)."
+  ],
+  "critical_code_review_comments": [
+    "Login uses DUMMY_HASH for constant-time compare on unknown emails - good, prevents user enumeration timing attack.",
+    "confirm_reset correctly revokes all existing sessions after password change (delete_many on user_sessions).",
+    "verify_email consumes token by setting used_at (idempotent - repeat attempts return 400 as designed).",
+    "_user_from_doc strips password_hash and apple_sub before returning User model - PII/secrets safe.",
+    "Apple endpoint properly validates JWT via Apple's JWKS with audience check when APPLE_AUDIENCES is set.",
+    "server.py is 812 lines - approaching the 700-line threshold; consider splitting auth into a router module (auth_router.py) and groups into groups_router.py for maintainability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (new)",
+    "/app/backend/tests/__init__.py (new, empty)"
+  ],
+  "success_rate": {"backend": "100% (25/25)", "frontend": "N/A (skipped as per request)"},
+  "seed_data_creation": "Test users created with TEST_ prefix / random uuids per run; cleanup fixture (module-scoped) deletes users matching ^test_ regex plus their user_sessions and auth_tokens on teardown. Seeded auth_tokens directly for verify-email and password_reset flows (raw token unhashable server-side).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 25 backend tests pass. Test file at /app/backend/tests/backend_test.py is idempotent and self-cleans. Backend URL used: http://localhost:8001. Emergent email endpoint returns 202. To retest, just run: pytest /app/backend/tests/backend_test.py -v. For frontend testing, use EXPO_BACKEND_URL from /app/frontend/.env with mobile viewport 375x667.",
+  "rca_of_issue": "N/A - no bugs found. All auth flows behave exactly as specified in the review request."
+}

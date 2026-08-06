@@ -11,7 +11,13 @@ type AuthState = {
   token: string | null;
   loading: boolean;
   signIn: () => Promise<void>;
+  signInWithEmail: (email: string, password: string) => Promise<void>;
+  signInWithApple: () => Promise<void>;
+  signUp: (email: string, password: string, name: string) => Promise<void>;
+  requestPasswordReset: (email: string) => Promise<void>;
   signOut: () => Promise<void>;
+  setUser: (u: ApiUser) => void;
+  applySession: (session_token: string, user: ApiUser) => Promise<void>;
 };
 
 const TOKEN_KEY = "groupup.session_token";
@@ -146,6 +152,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [extractSessionId, processSessionId]);
 
+  const applySession = useCallback(
+    async (session_token: string, u: ApiUser) => {
+      await persistToken(session_token);
+      setToken(session_token);
+      setUser(u);
+    },
+    [persistToken],
+  );
+
+  const signInWithEmail = useCallback(
+    async (email: string, password: string) => {
+      const res = await api.login(email, password);
+      await applySession(res.session_token, res.user);
+    },
+    [applySession],
+  );
+
+  const signUp = useCallback(
+    async (email: string, password: string, name: string) => {
+      await api.signup(email, password, name);
+    },
+    [],
+  );
+
+  const requestPasswordReset = useCallback(async (email: string) => {
+    await api.requestPasswordReset(email);
+  }, []);
+
+  const signInWithApple = useCallback(async () => {
+    if (Platform.OS !== "ios") {
+      throw new Error("Apple Sign-In è disponibile solo su iOS");
+    }
+    // Lazy-import to avoid crashing on Android/Web
+    const AppleAuthentication = await import("expo-apple-authentication");
+    const credential = await AppleAuthentication.signInAsync({
+      requestedScopes: [
+        AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+        AppleAuthentication.AppleAuthenticationScope.EMAIL,
+      ],
+    });
+    const identityToken = credential.identityToken;
+    if (!identityToken) throw new Error("Apple non ha fornito un token");
+    const fullName = credential.fullName
+      ? [credential.fullName.givenName, credential.fullName.familyName]
+          .filter(Boolean)
+          .join(" ")
+      : undefined;
+    const res = await api.appleAuth(identityToken, credential.email || undefined, fullName);
+    await applySession(res.session_token, res.user);
+  }, [applySession]);
+
   const signOut = useCallback(async () => {
     try {
       if (token) await api.logout(token);
@@ -156,7 +213,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [persistToken, token]);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, signIn, signOut, setUser }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        loading,
+        signIn,
+        signInWithEmail,
+        signInWithApple,
+        signUp,
+        requestPasswordReset,
+        signOut,
+        setUser,
+        applySession,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

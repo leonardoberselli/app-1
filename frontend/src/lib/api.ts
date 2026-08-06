@@ -73,6 +73,36 @@ export const api = {
       method: "POST",
       body: { session_id },
     }),
+  signup: (email: string, password: string, name: string) =>
+    request<{ message: string }>("/auth/signup", {
+      method: "POST",
+      body: { email, password, name },
+    }),
+  login: (email: string, password: string) =>
+    request<{ session_token: string; user: ApiUser }>("/auth/login", {
+      method: "POST",
+      body: { email, password },
+    }),
+  verifyEmail: (token: string) =>
+    request<{ session_token: string; user: ApiUser }>("/auth/verify-email", {
+      method: "POST",
+      body: { token },
+    }),
+  requestPasswordReset: (email: string) =>
+    request<{ message: string }>("/auth/request-password-reset", {
+      method: "POST",
+      body: { email },
+    }),
+  confirmReset: (token: string, new_password: string) =>
+    request<{ message: string }>("/auth/confirm-reset", {
+      method: "POST",
+      body: { token, new_password },
+    }),
+  appleAuth: (identity_token: string, email?: string, full_name?: string) =>
+    request<{ session_token: string; user: ApiUser }>("/auth/apple", {
+      method: "POST",
+      body: { identity_token, email, full_name },
+    }),
   me: (token: string) => request<ApiUser>("/auth/me", { token }),
   updateProfile: (
     token: string,
