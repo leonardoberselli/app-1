@@ -1,16 +1,16 @@
 {
   "expo": {
-    "name": "frontend",
-    "slug": "frontend",
+    "name": "GroupUp",
+    "slug": "groupup",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "scheme": "groupup",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.emergent.socialactivities.yamwzi",
+      "bundleIdentifier": "com.leonardo.groupup",
       "usesAppleSignIn": true,
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Scegli una foto per il tuo profilo",
@@ -23,7 +23,7 @@
         "backgroundColor": "#000"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.emergent.socialactivities.yamwzi",
+      "package": "com.leonardo.groupup",
       "permissions": ["READ_MEDIA_IMAGES"]
     },
     "web": {

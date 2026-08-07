@@ -1,0 +1,39 @@
+{
+  "summary": "Testing of app.json bundle identifier change (com.emergent.socialactivities.yamwzi -> com.leonardo.groupup) plus regression on backend and mobile web preview. Static config verified: expo.name='GroupUp', slug='groupup', scheme='groupup', ios.bundleIdentifier='com.leonardo.groupup', android.package='com.leonardo.groupup'. Backend regression: 25/25 pytest tests pass (auth signup/login/verify/reset, Google/Apple, groups, Mongo indexes). Frontend regression: Expo web loads with title 'GroupUp', login with test@example.com works (after seeding email_verified=true and profile_complete=true in Mongo), feed /api/groups returns groups and cards render, tab navigation Esplora <-> Crea <-> Profilo works and routes to /, /create, /profile respectively. CRITICAL side-effect finding: backend/.env APPLE_AUDIENCES still lists the OLD bundle id and MUST be updated to keep Apple Sign-In functional after deploy.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "APPLE_AUDIENCES env var", "issue": "backend/.env APPLE_AUDIENCES is 'com.emergent.socialactivities.yamwzi,host.exp.Exponent' but the new iOS bundleIdentifier is 'com.leonardo.groupup'. Apple JWT audience validation (server.py _verify_apple_identity_token) will reject real Apple tokens once the app is deployed with the new bundle id. Recommend updating to 'com.leonardo.groupup,host.exp.Exponent'."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "shadow* style props", "issue": "Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' emitted on home screen render. Pre-existing, not caused by app.json change, but worth migrating to boxShadow to silence RN 0.76+ deprecation warnings."},
+      {"component": "LoginScreen setState-in-render", "issue": "Console error on login submission: 'Cannot update a component (ForwardRef(NavigationContainerInner)) while rendering a different component (LoginScreen).' Reference: frontend/app/login.tsx. Pre-existing regression risk; likely a router.replace() or setError inside render/useEffect without proper guards. Not caused by app.json change."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Update /app/backend/.env APPLE_AUDIENCES from 'com.emergent.socialactivities.yamwzi,host.exp.Exponent' to 'com.leonardo.groupup,host.exp.Exponent' and restart backend so Apple Sign-In JWT audience check accepts tokens signed for the new bundle id. Also update the placeholder note in /app/memory/test_credentials.md line 41.",
+    "(Optional, pre-existing) Fix setState-in-render error in frontend/app/login.tsx during login flow.",
+    "(Optional, pre-existing) Migrate 'shadow*' style props to 'boxShadow' to remove RN deprecation warnings."
+  ],
+  "critical_code_review_comments": [
+    "app.json values match the review requirements exactly: android.package='com.leonardo.groupup', ios.bundleIdentifier='com.leonardo.groupup', name='GroupUp', slug='groupup', scheme='groupup'.",
+    "Config-only change confirmed - no runtime code paths were altered, and full backend suite (25/25) plus interactive smoke test on preview URL still pass.",
+    "APPLE_AUDIENCES coupling: because the iOS bundle id is a compile-time app.json value AND a runtime Apple-JWT-verification env value, changing one without the other silently breaks Apple Sign-In in production."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (25/25)", "frontend": "100% smoke (login + feed + 3-tab nav all working)"},
+  "seed_data_creation": "For UI smoke test: updated existing Mongo user email='test@example.com' to email_verified=true, password_hash=bcrypt('testpass123'), gender='male', age=30, profile_complete=true, photo_url set. This unblocks onboarding gate so tabs are reachable. Persistent test account still per /app/memory/test_credentials.md.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "app.json bundle-id rename is verified end-to-end (config + backend + UI smoke). The only follow-up action is a one-line env change to APPLE_AUDIENCES in /app/backend/.env; after editing, run `sudo supervisorctl restart backend` and re-run `pytest /app/backend/tests/backend_test.py -v`. For UI: EXPO_PUBLIC_BACKEND_URL=https://social-activities-3.preview.emergentagent.com, mobile viewport 375x667, credentials test@example.com/testpass123 (user is already seeded verified+onboarded in Mongo).",
+  "rca_of_issue": "N/A - config change verified. The one identified risk (APPLE_AUDIENCES mismatch) has RCA: server.py verifies Apple identity tokens using jwt.decode(..., audience=APPLE_AUDIENCES.split(',')). Since Apple signs the JWT with `aud` equal to the app's bundle id, and the bundle id has moved to com.leonardo.groupup, the audience env var must be updated to match or JWT validation raises InvalidAudienceError and the endpoint returns 401."
+}
