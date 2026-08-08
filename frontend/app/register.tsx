@@ -103,7 +103,7 @@ export default function RegisterScreen() {
 
         <Text style={styles.label}>EMAIL</Text>
         <TextInput
-          testID="email-input"
+          testID="register-email-input"
           style={styles.input}
           value={email}
           onChangeText={setEmail}
@@ -116,7 +116,7 @@ export default function RegisterScreen() {
 
         <Text style={styles.label}>PASSWORD</Text>
         <TextInput
-          testID="password-input"
+          testID="register-password-input"
           style={styles.input}
           value={password}
           onChangeText={setPassword}
