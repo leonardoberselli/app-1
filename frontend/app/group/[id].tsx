@@ -23,7 +23,7 @@ import { formatDate } from "@/src/lib/date";
 
 export default function GroupDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { user, token } = useAuth();
+  const { user, fbUser } = useAuth();
   const router = useRouter();
 
   const [group, setGroup] = useState<ApiGroup | null>(null);
@@ -50,15 +50,15 @@ export default function GroupDetail() {
   }, [id]);
 
   const loadMessages = useCallback(async () => {
-    if (!id || !token) return;
+    if (!id || !fbUser) return;
     try {
-      const ms = await api.getMessages(token, id);
+      const ms = await api.getMessages(id);
       setMessages(ms);
       setChatError(null);
     } catch (e: any) {
       setChatError(e?.message || "Errore chat");
     }
-  }, [id, token]);
+  }, [id, fbUser]);
 
   useEffect(() => {
     loadGroup();
@@ -76,10 +76,10 @@ export default function GroupDetail() {
   }, [tab, isParticipant, loadMessages]);
 
   const handleJoin = async () => {
-    if (!token || !id) return;
+    if (!fbUser || !id) return;
     try {
       setActing(true);
-      const g = await api.joinGroup(token, id);
+      const g = await api.joinGroup(id);
       setGroup(g);
     } catch (e: any) {
       setChatError(e?.message || "Errore");
@@ -89,10 +89,10 @@ export default function GroupDetail() {
   };
 
   const handleLeave = async () => {
-    if (!token || !id) return;
+    if (!fbUser || !id) return;
     try {
       setActing(true);
-      const g = await api.leaveGroup(token, id);
+      const g = await api.leaveGroup(id);
       setGroup(g);
     } catch (e) {
       console.warn(e);
@@ -102,10 +102,10 @@ export default function GroupDetail() {
   };
 
   const handleDelete = async () => {
-    if (!token || !id) return;
+    if (!fbUser || !id) return;
     try {
       setActing(true);
-      await api.deleteGroup(token, id);
+      await api.deleteGroup(id);
       router.back();
     } catch (e) {
       console.warn(e);
@@ -116,10 +116,10 @@ export default function GroupDetail() {
 
   const sendMessage = async () => {
     const text = draft.trim();
-    if (!text || !token || !id) return;
+    if (!text || !fbUser || !id) return;
     try {
       setSending(true);
-      const m = await api.postMessage(token, id, text);
+      const m = await api.postMessage(id, text);
       setMessages((prev) => [...prev, m]);
       setDraft("");
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 50);

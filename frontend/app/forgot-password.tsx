@@ -30,7 +30,7 @@ export default function ForgotPassword() {
       await requestPasswordReset(email.trim());
       setDone(true);
     } catch (e: any) {
-      setError(e?.message || "Errore");
+      setError(e?.message || "Errore nell'invio");
     } finally {
       setBusy(false);
     }

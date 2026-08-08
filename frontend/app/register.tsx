@@ -29,7 +29,7 @@ export default function RegisterScreen() {
     setError(null);
     if (!name.trim()) return setError("Inserisci il tuo nome");
     if (!email.trim().includes("@")) return setError("Email non valida");
-    if (password.length < 8) return setError("La password deve essere di almeno 8 caratteri");
+    if (password.length < 6) return setError("La password deve essere di almeno 6 caratteri");
     if (password !== password2) return setError("Le password non coincidono");
     try {
       setSubmitting(true);
@@ -56,12 +56,12 @@ export default function RegisterScreen() {
             {"\n"}per verificare l&apos;account.
           </Text>
           <TouchableOpacity
-            testID="back-to-login"
-            onPress={() => router.replace("/login")}
+            testID="go-verify"
+            onPress={() => router.replace("/verify-email")}
             style={styles.primaryBtn}
             activeOpacity={0.85}
           >
-            <Text style={styles.primaryText}>Torna al login</Text>
+            <Text style={styles.primaryText}>Continua</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -120,7 +120,7 @@ export default function RegisterScreen() {
           style={styles.input}
           value={password}
           onChangeText={setPassword}
-          placeholder="Almeno 8 caratteri"
+          placeholder="Almeno 6 caratteri"
           placeholderTextColor="#9A9A9A"
           secureTextEntry
         />

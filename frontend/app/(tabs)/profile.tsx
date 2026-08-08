@@ -21,7 +21,7 @@ import { formatDate } from "@/src/lib/date";
 type Tab = "created" | "joined";
 
 export default function ProfileScreen() {
-  const { user, token, signOut } = useAuth();
+  const { user, fbUser, signOut } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("created");
   const [created, setCreated] = useState<ApiGroup[]>([]);
@@ -30,9 +30,9 @@ export default function ProfileScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    if (!token) return;
+    if (!fbUser) return;
     try {
-      const data = await api.myGroups(token);
+      const data = await api.myGroups();
       setCreated(data.created);
       setJoined(data.joined);
     } catch (e) {
@@ -41,7 +41,7 @@ export default function ProfileScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [token]);
+  }, [fbUser]);
 
   useFocusEffect(
     useCallback(() => {

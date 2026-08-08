@@ -16,7 +16,7 @@ import { useRouter } from "expo-router";
 import { useAuth } from "@/src/contexts/auth";
 
 export default function LoginScreen() {
-  const { signIn, signInWithEmail, signInWithApple, user, loading } = useAuth();
+  const { signInWithGoogle, signInWithEmail, signInWithApple, fbUser, loading } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState<"" | "google" | "apple" | "email">("");
@@ -37,17 +37,19 @@ export default function LoginScreen() {
     })();
   }, []);
 
-  if (user && !loading) {
-    router.replace("/");
-  }
+  useEffect(() => {
+    if (fbUser && !loading) {
+      router.replace("/");
+    }
+  }, [fbUser, loading, router]);
 
   const handleGoogle = async () => {
     setError(null);
     try {
       setBusy("google");
-      await signIn();
+      await signInWithGoogle();
     } catch (e: any) {
-      setError(e?.message || "Errore login");
+      setError(e?.message || "Errore login Google");
     } finally {
       setBusy("");
     }
@@ -59,7 +61,6 @@ export default function LoginScreen() {
       setBusy("apple");
       await signInWithApple();
     } catch (e: any) {
-      if (e?.code === "ERR_REQUEST_CANCELED") return;
       setError(e?.message || "Errore Apple");
     } finally {
       setBusy("");
@@ -101,6 +102,52 @@ export default function LoginScreen() {
         </View>
 
         <View style={styles.card}>
+          {/* --- Social buttons (Google + Apple) on top per user request --- */}
+          <TouchableOpacity
+            testID="google-login-button"
+            activeOpacity={0.85}
+            style={[styles.googleBtn, busy === "google" && { opacity: 0.6 }]}
+            onPress={handleGoogle}
+            disabled={busy !== ""}
+          >
+            {busy === "google" ? (
+              <ActivityIndicator color="#1F1F1F" />
+            ) : (
+              <>
+                {/* Google "G" logo colors (approx official) */}
+                <View style={styles.gLogoWrap}>
+                  <Text style={styles.gLogoLetter}>G</Text>
+                </View>
+                <Text style={styles.googleBtnText}>Accedi con Google</Text>
+              </>
+            )}
+          </TouchableOpacity>
+
+          {Platform.OS === "ios" && appleAvailable && (
+            <TouchableOpacity
+              testID="apple-login-button"
+              activeOpacity={0.85}
+              style={[styles.appleBtn, busy === "apple" && { opacity: 0.6 }]}
+              onPress={handleApple}
+              disabled={busy !== ""}
+            >
+              {busy === "apple" ? (
+                <ActivityIndicator color="#FFF" />
+              ) : (
+                <>
+                  <Ionicons name="logo-apple" size={20} color="#FFF" />
+                  <Text style={styles.appleBtnText}>Accedi con Apple</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
+
+          <View style={styles.dividerRow}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerText}>oppure</Text>
+            <View style={styles.dividerLine} />
+          </View>
+
           <Text style={styles.label}>EMAIL</Text>
           <TextInput
             testID="email-input"
@@ -164,48 +211,6 @@ export default function LoginScreen() {
               Non hai un account? <Text style={styles.link}>Registrati</Text>
             </Text>
           </TouchableOpacity>
-
-          <View style={styles.dividerRow}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>OPPURE</Text>
-            <View style={styles.dividerLine} />
-          </View>
-
-          <TouchableOpacity
-            testID="google-login-button"
-            activeOpacity={0.85}
-            style={[styles.googleBtn, busy === "google" && { opacity: 0.6 }]}
-            onPress={handleGoogle}
-            disabled={busy !== ""}
-          >
-            {busy === "google" ? (
-              <ActivityIndicator color="#0A0A0A" />
-            ) : (
-              <>
-                <Ionicons name="logo-google" size={20} color="#0A0A0A" />
-                <Text style={styles.googleBtnText}>Continua con Google</Text>
-              </>
-            )}
-          </TouchableOpacity>
-
-          {Platform.OS === "ios" && appleAvailable && (
-            <TouchableOpacity
-              testID="apple-login-button"
-              activeOpacity={0.85}
-              style={[styles.appleBtn, busy === "apple" && { opacity: 0.6 }]}
-              onPress={handleApple}
-              disabled={busy !== ""}
-            >
-              {busy === "apple" ? (
-                <ActivityIndicator color="#FFF" />
-              ) : (
-                <>
-                  <Ionicons name="logo-apple" size={20} color="#FFF" />
-                  <Text style={styles.appleBtnText}>Continua con Apple</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          )}
         </View>
 
         <Text style={styles.footer}>
@@ -310,42 +315,68 @@ const styles = StyleSheet.create({
     marginVertical: 18,
     gap: 10,
   },
-  dividerLine: { flex: 1, height: 2, backgroundColor: "#0A0A0A" },
-  dividerText: { fontWeight: "900", color: "#0A0A0A", letterSpacing: 1 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: "#DAD5CB" },
+  dividerText: {
+    fontWeight: "700",
+    color: "#8A8A8A",
+    letterSpacing: 0.5,
+    fontSize: 12,
+    textTransform: "lowercase",
+  },
+  // Google branding compliant: white bg, dark text (Roboto weight ~500),
+  // colored G logo circle on the left.
   googleBtn: {
-    backgroundColor: "#FFF",
-    borderWidth: 2,
-    borderColor: "#000",
-    borderRadius: 999,
-    paddingVertical: 14,
+    marginTop: 4,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#DADCE0",
+    borderRadius: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
+    gap: 12,
+    minHeight: 48,
+  },
+  gLogoWrap: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "#4285F4",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gLogoLetter: {
+    color: "#FFFFFF",
+    fontWeight: "900",
+    fontSize: 13,
+    lineHeight: 15,
   },
   googleBtnText: {
     fontSize: 15,
-    fontWeight: "900",
-    color: "#0A0A0A",
-    letterSpacing: 0.5,
+    fontWeight: "600",
+    color: "#3C4043",
+    letterSpacing: 0.25,
   },
+  // Apple HIG compliant: black bg, white text/glyph, corner radius.
   appleBtn: {
-    marginTop: 10,
-    backgroundColor: "#000",
-    borderWidth: 2,
-    borderColor: "#000",
-    borderRadius: 999,
-    paddingVertical: 14,
+    marginTop: 8,
+    backgroundColor: "#000000",
+    borderRadius: 8,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
+    gap: 8,
+    minHeight: 48,
   },
   appleBtnText: {
     fontSize: 15,
-    fontWeight: "900",
-    color: "#FFF",
-    letterSpacing: 0.5,
+    fontWeight: "600",
+    color: "#FFFFFF",
+    letterSpacing: 0.25,
   },
   footer: {
     color: "#B4B4B4",

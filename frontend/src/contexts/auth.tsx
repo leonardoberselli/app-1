@@ -1,231 +1,300 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+  useRef,
+} from "react";
 import { Platform } from "react-native";
-import * as WebBrowser from "expo-web-browser";
-import * as Linking from "expo-linking";
+import {
+  User as FirebaseUser,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  signOut as fbSignOut,
+  updateProfile as fbUpdateProfile,
+  GoogleAuthProvider,
+  OAuthProvider,
+  signInWithCredential,
+  signInWithPopup,
+  reload,
+} from "firebase/auth";
 
-import { storage } from "@/src/utils/storage";
+import { auth, GOOGLE_WEB_CLIENT_ID, GOOGLE_IOS_CLIENT_ID } from "@/src/lib/firebase";
 import { api, ApiUser } from "@/src/lib/api";
 
-type AuthState = {
+type AuthContextValue = {
+  fbUser: FirebaseUser | null;
   user: ApiUser | null;
-  token: string | null;
   loading: boolean;
-  signIn: () => Promise<void>;
+  emailVerified: boolean;
+  needsEmailVerification: boolean;
+
   signInWithEmail: (email: string, password: string) => Promise<void>;
-  signInWithApple: () => Promise<void>;
   signUp: (email: string, password: string, name: string) => Promise<void>;
+  signInWithGoogle: () => Promise<void>;
+  signInWithApple: () => Promise<void>;
   requestPasswordReset: (email: string) => Promise<void>;
+  resendVerificationEmail: () => Promise<void>;
+  reloadVerification: () => Promise<boolean>;
   signOut: () => Promise<void>;
-  setUser: (u: ApiUser) => void;
-  applySession: (session_token: string, user: ApiUser) => Promise<void>;
+  refreshMe: () => Promise<void>;
+  setUser: (u: ApiUser | null) => void;
 };
 
-const TOKEN_KEY = "groupup.session_token";
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-const AuthContext = createContext<AuthState | undefined>(undefined);
+// Turn Firebase auth error codes into friendly Italian messages.
+function toItalianError(code?: string, fallback = "Errore di autenticazione"): string {
+  const map: Record<string, string> = {
+    "auth/invalid-email": "Email non valida",
+    "auth/user-disabled": "Account disabilitato",
+    "auth/user-not-found": "Nessun account trovato con questa email",
+    "auth/wrong-password": "Password errata",
+    "auth/invalid-credential": "Email o password non validi",
+    "auth/invalid-login-credentials": "Email o password non validi",
+    "auth/email-already-in-use": "Email già registrata",
+    "auth/weak-password": "La password deve avere almeno 6 caratteri",
+    "auth/network-request-failed": "Nessuna connessione a Internet",
+    "auth/too-many-requests": "Troppi tentativi, riprova più tardi",
+    "auth/popup-closed-by-user": "Accesso annullato",
+    "auth/cancelled-popup-request": "Accesso annullato",
+    "auth/operation-not-allowed": "Provider non abilitato in Firebase Console",
+  };
+  return (code && map[code]) || fallback;
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [fbUser, setFbUser] = useState<FirebaseUser | null>(null);
   const [user, setUser] = useState<ApiUser | null>(null);
-  const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [emailVerified, setEmailVerified] = useState(false);
+  const initializedRef = useRef(false);
 
-  const persistToken = useCallback(async (t: string | null) => {
-    if (Platform.OS === "web") {
-      if (t) await storage.setItem(TOKEN_KEY, t);
-      else await storage.removeItem(TOKEN_KEY);
-    } else {
-      if (t) await storage.secureSet(TOKEN_KEY, t);
-      else await storage.secureRemove(TOKEN_KEY);
-    }
-  }, []);
-
-  const loadToken = useCallback(async (): Promise<string | null> => {
-    if (Platform.OS === "web") {
-      return (await storage.getItem<string>(TOKEN_KEY, "")) || null;
-    }
-    return (await storage.secureGet<string>(TOKEN_KEY, "")) || null;
-  }, []);
-
-  const processSessionId = useCallback(
-    async (sessionId: string) => {
-      const res = await api.authSession(sessionId);
-      await persistToken(res.session_token);
-      setToken(res.session_token);
-      setUser(res.user);
-    },
-    [persistToken],
-  );
-
-  const extractSessionId = useCallback((url: string | null): string | null => {
-    if (!url) return null;
+  const refreshMe = useCallback(async () => {
     try {
-      // Match either #session_id=... or ?session_id=...
-      const m = url.match(/[#?&]session_id=([^&]+)/);
-      return m ? decodeURIComponent(m[1]) : null;
-    } catch {
-      return null;
+      const me = await api.me();
+      setUser(me);
+    } catch (e) {
+      // Token may have expired; sign out.
+      console.warn("refreshMe failed", e);
     }
   }, []);
 
+  // Firebase auth state listener
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        // Web: check URL hash/query for session_id first.
-        if (Platform.OS === "web" && typeof window !== "undefined") {
-          const sid = extractSessionId(window.location.hash) ||
-            extractSessionId(window.location.search);
-          if (sid) {
-            await processSessionId(sid);
-            window.history.replaceState(null, "", window.location.pathname);
-            if (!cancelled) setLoading(false);
-            return;
-          }
-        } else {
-          // Mobile: cold start deep link fallback.
-          const initial = await Linking.getInitialURL();
-          const sid = extractSessionId(initial);
-          if (sid) {
-            await processSessionId(sid);
-            if (!cancelled) setLoading(false);
-            return;
-          }
-        }
-
-        // Existing stored token?
-        const stored = await loadToken();
-        if (stored) {
-          try {
-            const me = await api.me(stored);
-            if (!cancelled) {
-              setToken(stored);
-              setUser(me);
-            }
-          } catch {
-            await persistToken(null);
-          }
-        }
-      } catch (e) {
-        console.warn("auth init error", e);
-      } finally {
-        if (!cancelled) setLoading(false);
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setFbUser(u);
+      if (!u) {
+        setUser(null);
+        setEmailVerified(false);
+        setLoading(false);
+        initializedRef.current = true;
+        return;
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [extractSessionId, loadToken, persistToken, processSessionId]);
+      // Determine verification: email/password requires flag, social providers auto-verify.
+      const providers = u.providerData.map((p) => p.providerId);
+      const isSocial = providers.some((p) => p !== "password");
+      const verified = u.emailVerified || isSocial;
+      setEmailVerified(verified);
 
-  // Mobile: hot deep links
-  useEffect(() => {
-    if (Platform.OS === "web") return;
-    const sub = Linking.addEventListener("url", async (event) => {
-      const sid = extractSessionId(event.url);
-      if (sid) {
+      if (verified) {
+        // Fetch (or auto-create) backend profile.
         try {
-          await processSessionId(sid);
+          const me = await api.me();
+          setUser(me);
         } catch (e) {
-          console.warn("processSessionId hot", e);
+          console.warn("api.me() failed after auth", e);
+          setUser(null);
         }
+      } else {
+        setUser(null);
       }
+      setLoading(false);
+      initializedRef.current = true;
     });
-    return () => sub.remove();
-  }, [extractSessionId, processSessionId]);
+    return () => unsub();
+  }, []);
 
-  const signIn = useCallback(async () => {
-    const redirectUrl =
-      Platform.OS === "web" && typeof window !== "undefined"
-        ? `${window.location.origin}/`
-        : Linking.createURL("auth");
-    const authUrl = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-
-    if (Platform.OS === "web" && typeof window !== "undefined") {
-      window.location.href = authUrl;
-      return;
+  // ---- Email/Password ----
+  const signInWithEmail = useCallback(async (email: string, password: string) => {
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+    } catch (e: any) {
+      throw new Error(toItalianError(e?.code, e?.message));
     }
-    const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUrl);
-    if (result.type === "success" && result.url) {
-      const sid = extractSessionId(result.url);
-      if (sid) {
-        await processSessionId(sid);
-      }
-    }
-  }, [extractSessionId, processSessionId]);
-
-  const applySession = useCallback(
-    async (session_token: string, u: ApiUser) => {
-      await persistToken(session_token);
-      setToken(session_token);
-      setUser(u);
-    },
-    [persistToken],
-  );
-
-  const signInWithEmail = useCallback(
-    async (email: string, password: string) => {
-      const res = await api.login(email, password);
-      await applySession(res.session_token, res.user);
-    },
-    [applySession],
-  );
+  }, []);
 
   const signUp = useCallback(
     async (email: string, password: string, name: string) => {
-      await api.signup(email, password, name);
+      try {
+        const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+        if (name.trim()) {
+          await fbUpdateProfile(cred.user, { displayName: name.trim() });
+        }
+        await sendEmailVerification(cred.user);
+      } catch (e: any) {
+        throw new Error(toItalianError(e?.code, e?.message));
+      }
     },
     [],
   );
 
   const requestPasswordReset = useCallback(async (email: string) => {
-    await api.requestPasswordReset(email);
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+    } catch (e: any) {
+      throw new Error(toItalianError(e?.code, e?.message));
+    }
   }, []);
 
+  const resendVerificationEmail = useCallback(async () => {
+    if (!auth.currentUser) throw new Error("Utente non autenticato");
+    try {
+      await sendEmailVerification(auth.currentUser);
+    } catch (e: any) {
+      throw new Error(toItalianError(e?.code, e?.message));
+    }
+  }, []);
+
+  const reloadVerification = useCallback(async () => {
+    if (!auth.currentUser) return false;
+    try {
+      await reload(auth.currentUser);
+      const ok = !!auth.currentUser.emailVerified;
+      setEmailVerified(ok);
+      if (ok) {
+        try {
+          const me = await api.me();
+          setUser(me);
+        } catch {}
+      }
+      return ok;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // ---- Google ----
+  const signInWithGoogle = useCallback(async () => {
+    try {
+      if (Platform.OS === "web") {
+        const provider = new GoogleAuthProvider();
+        await signInWithPopup(auth, provider);
+        return;
+      }
+      // Native: @react-native-google-signin
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { GoogleSignin, statusCodes } = require("@react-native-google-signin/google-signin");
+      GoogleSignin.configure({
+        webClientId: GOOGLE_WEB_CLIENT_ID,
+        iosClientId: GOOGLE_IOS_CLIENT_ID,
+        offlineAccess: false,
+      });
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      const info = await GoogleSignin.signIn();
+      // The library returns { data: { idToken, ... } } in v13+, or flat in older.
+      const idToken =
+        (info && info.data && info.data.idToken) ||
+        (info && (info as any).idToken) ||
+        null;
+      if (!idToken) throw new Error("Google non ha fornito un token");
+      const credential = GoogleAuthProvider.credential(idToken);
+      await signInWithCredential(auth, credential);
+      // Silence unused var
+      void statusCodes;
+    } catch (e: any) {
+      if (e?.code === "SIGN_IN_CANCELLED" || e?.code === "-5") return;
+      throw new Error(toItalianError(e?.code, e?.message || "Errore accesso Google"));
+    }
+  }, []);
+
+  // ---- Apple ----
   const signInWithApple = useCallback(async () => {
     if (Platform.OS !== "ios") {
       throw new Error("Apple Sign-In è disponibile solo su iOS");
     }
-    // Lazy-import to avoid crashing on Android/Web
-    const AppleAuthentication = await import("expo-apple-authentication");
-    const credential = await AppleAuthentication.signInAsync({
-      requestedScopes: [
-        AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
-        AppleAuthentication.AppleAuthenticationScope.EMAIL,
-      ],
-    });
-    const identityToken = credential.identityToken;
-    if (!identityToken) throw new Error("Apple non ha fornito un token");
-    const fullName = credential.fullName
-      ? [credential.fullName.givenName, credential.fullName.familyName]
-          .filter(Boolean)
-          .join(" ")
-      : undefined;
-    const res = await api.appleAuth(identityToken, credential.email || undefined, fullName);
-    await applySession(res.session_token, res.user);
-  }, [applySession]);
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const AppleAuthentication = require("expo-apple-authentication");
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const Crypto = require("expo-crypto");
+      // Generate a nonce to bind the token, then hash it for Apple.
+      const rawNonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const hashedNonce = await Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        rawNonce,
+      );
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+        nonce: hashedNonce,
+      });
+      if (!credential.identityToken) {
+        throw new Error("Apple non ha fornito un token");
+      }
+      const provider = new OAuthProvider("apple.com");
+      const authCred = provider.credential({
+        idToken: credential.identityToken,
+        rawNonce,
+      });
+      const result = await signInWithCredential(auth, authCred);
+      // First-time only: Apple returns fullName. Persist it into Firebase profile.
+      const fullName = credential.fullName;
+      const display = fullName
+        ? [fullName.givenName, fullName.familyName].filter(Boolean).join(" ")
+        : "";
+      if (display && result.user && !result.user.displayName) {
+        await fbUpdateProfile(result.user, { displayName: display });
+      }
+    } catch (e: any) {
+      if (e?.code === "ERR_REQUEST_CANCELED" || e?.code === "ERR_CANCELED") return;
+      throw new Error(toItalianError(e?.code, e?.message || "Errore accesso Apple"));
+    }
+  }, []);
 
   const signOut = useCallback(async () => {
     try {
-      if (token) await api.logout(token);
-    } catch {}
-    await persistToken(null);
-    setToken(null);
-    setUser(null);
-  }, [persistToken, token]);
+      // If Google native session exists, sign out from that too.
+      if (Platform.OS !== "web") {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { GoogleSignin } = require("@react-native-google-signin/google-signin");
+          const isSignedIn = await GoogleSignin.getCurrentUser();
+          if (isSignedIn) await GoogleSignin.signOut();
+        } catch {}
+      }
+      await fbSignOut(auth);
+    } catch (e) {
+      console.warn("signOut error", e);
+    }
+  }, []);
+
+  const needsEmailVerification = !!fbUser && !emailVerified;
 
   return (
     <AuthContext.Provider
       value={{
+        fbUser,
         user,
-        token,
         loading,
-        signIn,
+        emailVerified,
+        needsEmailVerification,
         signInWithEmail,
-        signInWithApple,
         signUp,
+        signInWithGoogle,
+        signInWithApple,
         requestPasswordReset,
+        resendVerificationEmail,
+        reloadVerification,
         signOut,
+        refreshMe,
         setUser,
-        applySession,
       }}
     >
       {children}
@@ -233,7 +302,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function useAuth(): AuthState {
+export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");
   return ctx;

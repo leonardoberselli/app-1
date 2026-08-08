@@ -67,7 +67,7 @@ function parseCustomDate(text: string): { iso: string | null; error: string | nu
 }
 
 export default function CreateScreen() {
-  const { token } = useAuth();
+  const { fbUser } = useAuth();
   const router = useRouter();
   const dayOptions = useMemo(() => nextDays(14), []);
 
@@ -121,13 +121,13 @@ export default function CreateScreen() {
       return setError("Numero partecipanti non valido");
     if (isNaN(minA) || isNaN(maxA) || minA < 0 || maxA < minA)
       return setError("Età non valida");
-    if (!token) return setError("Devi accedere");
+    if (!fbUser) return setError("Devi accedere");
 
     try {
       setSubmitting(true);
       const cat = isCustom ? "custom" : categoryId;
       const catLabel = isCustom ? customCategory.trim() : (selectedCat?.label || "");
-      const group = await api.createGroup(token, {
+      const group = await api.createGroup({
         title: title.trim(),
         category: cat,
         category_label: catLabel,

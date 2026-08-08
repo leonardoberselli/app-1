@@ -1,0 +1,61 @@
+{
+  "summary": "Full end-to-end validation of Firebase Auth migration. Rewrote /app/backend/tests/backend_test.py from scratch (old suite tested removed bcrypt/JWT endpoints). NEW suite: 30/30 pytest PASS in 2.63s against public URL https://social-activities-3.preview.emergentagent.com. Covers: /api/auth/me GET+PATCH with real Firebase ID token (identityToolkit REST exchange for testuser@groupup.test/TestPass1234! → UID nXSxqsjwtGU3kEPFNkF9CgWR5tb2, email_verified=true); 401 on missing/malformed/invalid tokens; profile_complete auto-computed after PATCH (gender+age+picture); 422 on invalid age (999) and invalid gender ('unknown'); all 8 legacy auth endpoints (/auth/login,/signup,/session,/apple,/verify-email,/request-password-reset,/confirm-reset,/logout) return 404; groups CRUD (create requires auth, list public, GET detail, /mine returns {created,joined}, delete ownership, 400 on max_participants<min_participants and max_age<min_age); filter by ?category=basketball and ?q=<title>; join/leave flow via seeded foreign group; owner cannot leave (400); messages: participant-only 200 read/post, 403 for non-participants, 401 for anonymous. FRONTEND (mobile viewport 390x844): /login renders 'GROUPUP · ITA' badge + 'Accedi con Google' button with blue G circle + 'oppure' divider + EMAIL/PASSWORD labels + 'Password dimenticata?' + yellow 'ACCEDI' primary + 'Non hai un account? Registrati' — all Italian, all testIDs present; Apple button correctly hidden on web (Platform.OS !== 'ios'); wrong-password → 'Email o password non validi' Italian error; login with pre-verified test user navigates to /(tabs) showing 'Ciao, Test 👋' feed with existing 'Basket al parco' group; group detail (Info tab) shows Milano, 12/07/2026 · ore 18:00, 1/10 (min 4), Età 18-45, participants list with owner crown; Chat tab shows 'Nessun messaggio. Inizia tu! 💬' empty state; posted TEST_msg_playwright message via input+send button → bubble rendered instantly on right side; CREA tab navigates to /create with full form (TITOLO, CATEGORIA grid, LUOGO, QUANDO date/time pickers, PARTECIPANTI, ETÀ). /forgot-password renders 'Recupera password' with EMAIL input + 'INVIA LINK' button. /register renders NOME/EMAIL/PASSWORD/CONFERMA PASSWORD with 'CREA ACCOUNT' + inline validation 'Inserisci il tuo nome' verified. Cleanup: TEST_msg_playwright removed from db.messages. No red screens, no console errors beyond expected 'shadow*/pointerEvents deprecated' RN-Web warnings.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "login + register",
+        "issues": [
+          "Both /login and /register use identical testID values 'email-input' and 'password-input'. Since Expo Router keeps stacked screens mounted, Playwright's selector resolves to 2 elements causing ambiguity. Not a runtime bug (only one is visible), but test suites need to scope selectors. Consider renaming register screen's inputs to 'register-email-input' / 'register-password-input' for isolated automation."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {
+        "component": "react-native-web shadow props",
+        "issue": "Console emits 'shadow* style props are deprecated. Use boxShadow.' Multiple locations across screens (login.tsx primaryBtn shadowColor/shadowOffset/shadowOpacity/shadowRadius, register.tsx primaryBtn, others). RN Web now expects boxShadow. Not user-facing but noisy in dev + will be an error in RN 0.77+."
+      },
+      {
+        "component": "pointerEvents deprecation",
+        "issue": "Console emits 'props.pointerEvents is deprecated. Use style.pointerEvents.' Likely coming from a library dep (react-native-safe-area-context or keyboard-controller). Not blocking."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Low) Rename register.tsx TextInput testIDs to 'register-email-input' / 'register-password-input' (and same for name/password2 optional) so Playwright tests can uniquely target them when the login screen is still mounted in the router stack.",
+    "(Low) Replace RN shadowColor/shadowOffset/shadowOpacity/shadowRadius with `boxShadow` where possible or wrap with Platform.OS !== 'web' guards to silence deprecation warnings. Zero-effort mitigation is unlisted; leave as-is if native rendering priority is higher.",
+    "(Info only) Google Sign-In popup was NOT invoked in headless testing — expected per user note. Apple button hidden on web — expected. Verify-email screen not exercised here (test user is pre-verified) — code path preserved and covered by existing frontend guard logic in index.tsx."
+  ],
+  "critical_code_review_comments": [
+    "server.py:141-142 uses a confusing `list(a and [x] or [])` idiom to build providers. Works but hard to read; suggest `providers = [firebase.get('sign_in_provider')] if firebase.get('sign_in_provider') else []`.",
+    "server.py: _get_or_create_user updates email_verified only when it differs but does NOT update `name` if Firebase Auth's displayName changes — the current comment ('keep name from Firebase profile if user hasn't changed it manually') implies intent is to preserve user-updated names; OK.",
+    "server.py:141 providers merged as `dict.fromkeys(existing + new)` keeps order — good for stable ordering across sessions.",
+    "get_current_user (server.py:184) uses `check_revoked=False`; for a real production auth story it should be True on sensitive endpoints (e.g., after password change). Not critical for this migration.",
+    "/api/groups/mine returns a plain dict of {created, joined} — fine, but consider a proper Pydantic response_model=MyGroupsResponse for OpenAPI clarity.",
+    "server.py:314 `if any(p['user_id'] == user.user_id ...)` on /join short-circuits to a plain return without indicating idempotency — fine.",
+    "No pagination on GET /api/groups (hard limit 200). Acceptable for MVP.",
+    "server.py file is 433 lines — within the 700-line guideline, no split needed.",
+    "Frontend login.tsx & register.tsx use `testID` on all interactive elements ✅. All text wrapped in <Text>. No className. All async paths have loading & error states."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {
+    "backend": "100% (30/30 pytest)",
+    "frontend": "100% for exercisable web flows (Login, wrong-pw error, verified login → tabs, group detail Info+Chat, message send, CREA form load, Forgot password screen, Register form + validation). Google popup + Apple + verify-email screens not exercisable in headless preview but code inspection confirms wiring."
+  },
+  "seed_data_creation": "None. Reused pre-seeded Firebase user testuser@groupup.test (UID nXSxqsjwtGU3kEPFNkF9CgWR5tb2). Ephemeral test groups + messages prefixed TEST_ were created via authenticated API and cleaned up (0 groups leftover, 1 chat message deleted).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Firebase Auth migration is fully green on backend + web preview. To get a fresh ID token: curl POST https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyCfHWq1CR3bcuXgn0I44kkgvjHZiOjsY-o with {email,password,returnSecureToken:true}, use returned idToken as Bearer. Test suite: `pytest /app/backend/tests/backend_test.py -v --junitxml=/app/test_reports/pytest/pytest_results.xml` runs in ~3s. Public URL: https://social-activities-3.preview.emergentagent.com. UID: nXSxqsjwtGU3kEPFNkF9CgWR5tb2. Note that Google native flow, Apple flow, verify-email gating, and native push notifications require an APK/iOS build — cannot be validated from web preview.",
+  "rca_of_issue": "N/A — no bugs found. Migration from custom bcrypt/JWT + Emergent-managed emails to Firebase Authentication (JS SDK v12 + firebase-admin on backend) is functioning correctly across all reachable surfaces."
+}

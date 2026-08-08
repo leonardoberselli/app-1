@@ -27,7 +27,7 @@ const GENDERS: { id: Gender; label: string; emoji: string }[] = [
 ];
 
 export default function ProfileEdit() {
-  const { user, token, setUser } = useAuth();
+  const { user, fbUser, setUser } = useAuth();
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string }>();
   const isOnboarding = params.mode === "onboarding";
@@ -86,10 +86,10 @@ export default function ProfileEdit() {
     const a = parseInt(age, 10);
     if (isNaN(a) || a < 13 || a > 120) return setError("Inserisci un'età valida (13-120)");
     if (!picture) return setError("Aggiungi una foto profilo");
-    if (!token) return setError("Non sei autenticato");
+    if (!fbUser) return setError("Non sei autenticato");
     try {
       setSaving(true);
-      const updated = await api.updateProfile(token, {
+      const updated = await api.updateProfile({
         name: name.trim(),
         picture,
         gender,

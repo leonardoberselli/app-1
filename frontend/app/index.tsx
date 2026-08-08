@@ -5,19 +5,30 @@ import { useRouter } from "expo-router";
 import { useAuth } from "@/src/contexts/auth";
 
 export default function Index() {
-  const { user, loading } = useAuth();
+  const { fbUser, user, loading, needsEmailVerification } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
     if (loading) return;
-    if (!user) {
+    // Not signed into Firebase at all -> go to Login.
+    if (!fbUser) {
       router.replace("/login");
-    } else if (!user.profile_complete) {
-      router.replace("/profile-edit?mode=onboarding");
-    } else {
-      router.replace("/(tabs)");
+      return;
     }
-  }, [loading, user, router]);
+    // Signed in but email/password provider not verified yet.
+    if (needsEmailVerification) {
+      router.replace("/verify-email");
+      return;
+    }
+    // Signed in & verified but backend profile not loaded yet -> wait.
+    if (!user) return;
+    // Onboarding: complete profile (gender/age/picture).
+    if (!user.profile_complete) {
+      router.replace("/profile-edit?mode=onboarding");
+      return;
+    }
+    router.replace("/(tabs)");
+  }, [loading, fbUser, user, needsEmailVerification, router]);
 
   return (
     <View style={styles.container} testID="splash-screen">
