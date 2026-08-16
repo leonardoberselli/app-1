@@ -63,6 +63,9 @@ function toItalianError(code?: string, fallback = "Errore di autenticazione"): s
     "auth/popup-closed-by-user": "Accesso annullato",
     "auth/cancelled-popup-request": "Accesso annullato",
     "auth/operation-not-allowed": "Provider non abilitato in Firebase Console",
+    "auth/unauthorized-domain":
+      "Dominio non autorizzato. Aggiungilo su Firebase Console → Authentication → Settings → Authorized domains",
+    "auth/internal-error": "Errore interno. Riprova.",
   };
   return (code && map[code]) || fallback;
 }

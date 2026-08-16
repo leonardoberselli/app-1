@@ -1,0 +1,23 @@
+{
+  "summary": "Frontend regression test for Firebase auth error mapping change. Verified auth.tsx contains Italian mappings for 'auth/unauthorized-domain' and 'auth/internal-error' inside toItalianError. Regression on /login: all UI elements render (Google button, 'oppure' divider, Email/Password inputs, 'Password dimenticata?' link, ACCEDI button, 'Registrati' link). Email/password login with testuser@groupup.test / TestPass1234! succeeds — user is redirected to feed and 'Ciao, Test' greeting is shown. Register screen at /register renders correctly with NOME / EMAIL / PASSWORD / CONFERMA PASSWORD fields and CREA ACCOUNT button. No red-screen or console errors (only harmless RN web deprecation warnings about shadow* and pointerEvents).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Minor: RN web console warnings — 'shadow*' style props deprecated (use boxShadow) and 'props.pointerEvents' deprecated (use style.pointerEvents). Non-blocking, but consider addressing to keep console clean.",
+    "auth.tsx mapping is correctly added (lines 66-68). No further code changes needed on this side; unauthorized-domain resolution is a Firebase Console configuration task on the user's side."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A", "frontend": "100%"},
+  "seed_data_creation": "None. Used existing testuser@groupup.test / TestPass1234! from /app/memory/test_credentials.md.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Email/password login is stable via Firebase JS SDK on web preview. Google Sign-In on web (signInWithPopup) still requires the preview domain to be added to Firebase Console → Authentication → Settings → Authorized domains — this cannot be validated automatically. The Italian error string for auth/unauthorized-domain will surface only when a user attempts Google login while the domain is not authorized.",
+  "rca_of_issue": "N/A — this iteration validated an Italian error-message dictionary enrichment (auth/unauthorized-domain, auth/internal-error) in /app/frontend/src/contexts/auth.tsx and regression-tested that the pre-existing email/password login and register screens remain functional. Root cause of the original user-facing 'auth/unauthorized-domain' error is a Firebase Console configuration gap (preview domain not in Authorized domains list), which is external to the codebase and must be fixed by the user in Firebase Console."
+}
