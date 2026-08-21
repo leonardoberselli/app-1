@@ -23,7 +23,7 @@ import { formatDate } from "@/src/lib/date";
 
 export default function GroupDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { user, fbUser } = useAuth();
+  const { user, deviceId } = useAuth();
   const router = useRouter();
 
   const [group, setGroup] = useState<ApiGroup | null>(null);
@@ -50,7 +50,7 @@ export default function GroupDetail() {
   }, [id]);
 
   const loadMessages = useCallback(async () => {
-    if (!id || !fbUser) return;
+    if (!id || !deviceId) return;
     try {
       const ms = await api.getMessages(id);
       setMessages(ms);
@@ -58,7 +58,7 @@ export default function GroupDetail() {
     } catch (e: any) {
       setChatError(e?.message || "Errore chat");
     }
-  }, [id, fbUser]);
+  }, [id, deviceId]);
 
   useEffect(() => {
     loadGroup();
@@ -76,7 +76,7 @@ export default function GroupDetail() {
   }, [tab, isParticipant, loadMessages]);
 
   const handleJoin = async () => {
-    if (!fbUser || !id) return;
+    if (!deviceId || !id) return;
     try {
       setActing(true);
       const g = await api.joinGroup(id);
@@ -89,7 +89,7 @@ export default function GroupDetail() {
   };
 
   const handleLeave = async () => {
-    if (!fbUser || !id) return;
+    if (!deviceId || !id) return;
     try {
       setActing(true);
       const g = await api.leaveGroup(id);
@@ -102,7 +102,7 @@ export default function GroupDetail() {
   };
 
   const handleDelete = async () => {
-    if (!fbUser || !id) return;
+    if (!deviceId || !id) return;
     try {
       setActing(true);
       await api.deleteGroup(id);
@@ -116,7 +116,7 @@ export default function GroupDetail() {
 
   const sendMessage = async () => {
     const text = draft.trim();
-    if (!text || !fbUser || !id) return;
+    if (!text || !deviceId || !id) return;
     try {
       setSending(true);
       const m = await api.postMessage(id, text);
@@ -229,24 +229,41 @@ export default function GroupDetail() {
 
           <Text style={styles.sectionLabel}>PARTECIPANTI</Text>
           <View style={styles.participantsWrap}>
-            {group.participants.map((p) => (
-              <View key={p.user_id} style={styles.participant}>
-                {p.picture ? (
-                  <Image source={{ uri: p.picture }} style={styles.partAvatar} />
-                ) : (
-                  <View style={[styles.partAvatar, styles.partFallback]}>
-                    <Text style={{ fontWeight: "900" }}>
-                      {p.name?.charAt(0).toUpperCase()}
-                    </Text>
-                  </View>
-                )}
-                <Text style={styles.partName} numberOfLines={1}>
-                  {p.user_id === group.owner_id ? "👑 " : ""}
-                  {p.name}
-                </Text>
-              </View>
-            ))}
+            {group.participants.map((p) => {
+              const canView = isParticipant || p.user_id === user?.user_id;
+              const Wrapper: any = canView ? TouchableOpacity : View;
+              return (
+                <Wrapper
+                  key={p.user_id}
+                  testID={`participant-${p.user_id}`}
+                  activeOpacity={canView ? 0.7 : 1}
+                  onPress={
+                    canView ? () => router.push(`/user/${p.user_id}`) : undefined
+                  }
+                  style={styles.participant}
+                >
+                  {p.picture ? (
+                    <Image source={{ uri: p.picture }} style={styles.partAvatar} />
+                  ) : (
+                    <View style={[styles.partAvatar, styles.partFallback]}>
+                      <Text style={{ fontWeight: "900" }}>
+                        {p.name?.charAt(0).toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                  <Text style={styles.partName} numberOfLines={1}>
+                    {p.user_id === group.owner_id ? "👑 " : ""}
+                    {p.name}
+                  </Text>
+                </Wrapper>
+              );
+            })}
           </View>
+          {!isParticipant && (
+            <Text style={styles.hintText}>
+              Unisciti al gruppo per vedere il profilo dei partecipanti.
+            </Text>
+          )}
         </ScrollView>
       ) : (
         <KeyboardAvoidingView
@@ -281,9 +298,15 @@ export default function GroupDetail() {
                       ]}
                     >
                       {!mine && (
-                        <Text style={styles.bubbleAuthor} numberOfLines={1}>
-                          {item.user_name}
-                        </Text>
+                        <TouchableOpacity
+                          testID={`chat-author-${item.user_id}`}
+                          onPress={() => router.push(`/user/${item.user_id}`)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={styles.bubbleAuthor} numberOfLines={1}>
+                            {item.user_name}
+                          </Text>
+                        </TouchableOpacity>
                       )}
                       <Text style={[styles.bubbleText, mine && { color: "#FFFFFF" }]}>
                         {item.text}
@@ -434,6 +457,13 @@ const styles = StyleSheet.create({
   desc: { color: "#525252", marginTop: 6, lineHeight: 22 },
   sectionLabel: { fontSize: 12, fontWeight: "900", color: "#0A0A0A", letterSpacing: 1.5, marginTop: 6 },
   participantsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  hintText: {
+    marginTop: 10,
+    color: "#8A8A8A",
+    fontSize: 12,
+    fontWeight: "700",
+    fontStyle: "italic",
+  },
   participant: {
     width: "30%",
     alignItems: "center",

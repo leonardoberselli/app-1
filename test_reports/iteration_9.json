@@ -1,0 +1,62 @@
+{
+  "summary": "New GET /api/users/{target_id} public-profile endpoint + /user/[id] screen + participant/chat-author tap-to-profile navigation ALL VERIFIED end-to-end. Added TestPublicUserProfile pytest class (11 tests, all pass) covering: 401 missing/bad Bearer, 400 malformed target_id, 404 non-existent target, 200 self-view (no shared group required), 200 both-directions when caller & target share a group, 403 with correct Italian detail 'Puoi vedere solo profili di utenti con cui condividi un gruppo' when they don't, 403 after one party leaves the shared group, and 'auto-creates caller not target' behavior. PublicUser payload verified to include user_id/name/picture/gender/age/created_at and NOT leak profile_complete. Full backend regression: 73/73 pass (11 new + 62 pre-existing; the 9 TestExpiredGroupPurge tests remain pre-existing timing/throttle flakiness documented in iteration_7 and iteration_8 — deselected here, unchanged in this iteration). Frontend UI (mobile viewport 390x844): (a) participant cards render testID=participant-<user_id> for every participant including the owner; (b) tapping a participant card when the viewer is a participant navigates to /user/{id} and the profile screen shows testID=user-profile-screen with user-name='Bob Joiner', age chip '28 anni', gender chip 'Uomo' and the yellow banner 'Visibile perché siete membri dello stesso gruppo.'; (c) tapping the chat-author-<user_id> element also navigates to /user/{id} correctly and shows the profile screen (with 'Questo utente non ha ancora completato il profilo.' fallback when age/gender are null, and initial-letter fallback avatar when picture is null); (d) when the viewer is NOT a participant the italic hint 'Unisciti al gruppo per vedere il profilo dei partecipanti.' is visible and tapping the participant card does NOT navigate (stayed on /group/{id}). One PRE-EXISTING critical bug found via code review in /app/frontend/app/group/[id].tsx line 119: sendMessage references an undefined variable `fbUser` (leftover from the removed Firebase auth). This will throw ReferenceError on every send tap. Not exercised by the current review scope (which only requires the author-name to be tappable), but should be fixed. Deprecated packages check: none. React Native web deprecation console noise unchanged (shadow*, props.pointerEvents) — documented in iteration_8.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "TestExpiredGroupPurge (pre-existing, deselected)",
+        "issue": "3 tests still fail intermittently due to 30s _last_purge_at throttle interacting with startup bg force-purge (documented in iteration_7 and iteration_8). Unchanged in this iteration."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "group/[id].tsx :: sendMessage",
+        "issue": "Line 119 references undefined variable `fbUser` (Firebase leftover). Tapping chat-send will throw ReferenceError. Should be `user` (from useAuth). Pre-existing, not introduced by this iteration but noticed during code review. File: /app/frontend/app/group/[id].tsx:119",
+        "testID": "chat-send",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "shadow* style props",
+        "issue": "Console warns 'shadow* style props are deprecated. Use boxShadow.' Present on /app/frontend/app/user/[id].tsx (card style, ~line 245) and other screens with shadow*. Cosmetic dev warning only on web; safe on native. Migrate to boxShadow for web via Platform.OS check."
+      },
+      {
+        "component": "props.pointerEvents",
+        "issue": "Console warns 'props.pointerEvents is deprecated. Use style.pointerEvents'. Third-party origin (SafeAreaView/keyboard-controller). Same as iteration_8."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "HIGH: Fix /app/frontend/app/group/[id].tsx line 119: replace `fbUser` with `user` (the useAuth() return). Currently sendMessage throws ReferenceError on every tap of chat-send.",
+    "OPTIONAL (pre-existing): fix TestExpiredGroupPurge throttle interaction (see iteration_7/iteration_8 minor).",
+    "OPTIONAL: migrate shadow* -> boxShadow on web to silence deprecation console noise."
+  ],
+  "critical_code_review_comments": [
+    "server.py::get_public_user correctly restricts access to shared-group members via participants.$all query and always allows self-view. Uses PublicUser (no profile_complete field) — good. Regex validation on target_id prevents path-injection.",
+    "server.py — the endpoint places _DEVICE_ID_RE validation on target_id BEFORE the db lookup, which is the right ordering and cheap. 404 vs 403 distinction is intentional: attacker cannot enumerate valid device ids (they get 403 whether or not the user exists, as long as they don't share a group — actually the current code returns 404 first if target doesn't exist, which slightly leaks existence to any authenticated caller). Minor privacy nit: consider returning 403 for both 'not found' and 'not shared' to avoid enumeration. Non-blocking for MVP.",
+    "group/[id].tsx line 119 still uses `fbUser` — this is a REAL bug left over from the Firebase removal. TypeScript should have flagged it; check if `noImplicitAny` / `strict` are enabled in tsconfig.",
+    "user/[id].tsx correctly handles all three states: loading (spinner), error (403/404 -> lock emoji + red 'Profilo non visibile' + backend detail), and success (avatar/name/chips/banner). Error branch uses raw backend message, which for 403 is the exact Italian sentence requested.",
+    "api.ts::getUser uses simple template literal — no encoding of id. Not exploitable in practice (device_id regex restricts allowed chars) but calling encodeURIComponent(id) would be defensive."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (appended TestPublicUserProfile class + 2 class fixtures; +11 tests, all pass)"
+  ],
+  "success_rate": {
+    "backend": "73/73 (100%) excluding 9 pre-existing flaky TestExpiredGroupPurge tests. New endpoint tests: 11/11.",
+    "frontend": "100% for this iteration's scope (participant testIDs, tap-to-profile as participant, chat-author tap-to-profile, non-participant hint + no-navigation, profile screen fields, banner, fallbacks)"
+  },
+  "seed_data_creation": "Test-time only. Fixture creates users prefixed OWNER_/OTHER_/SELF_/NEVER_/TESTDEV_/STRAN_; session teardown deletes them and TEST_* groups/messages.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend test file: /app/backend/tests/backend_test.py — TestPublicUserProfile class at the bottom uses class-scoped fixtures `owner_named` (patches owner's name) and `other_user` (second device with full profile). Run standalone: pytest backend/tests/backend_test.py::TestPublicUserProfile -v. FE test used direct calls to `page.request` to seed backend state (users + group + join + optional message), then localStorage inject of device_id (`@groupup/device_id`) to simulate identity switch, then load /group/{id}. This pattern works reliably on the Expo web build and avoids the multi-step create-profile onboarding UI. Watch out for the /app/frontend/app/group/[id].tsx sendMessage `fbUser` bug — chat SENDING is broken, but chat LOADING and author-tap navigation work fine.",
+  "rca_of_issue": "N/A — no bug in the requested scope. Ancillary bug found: group/[id].tsx line 119 uses undefined `fbUser` (Firebase leftover). Repro: open a group as participant, go to Chat tab, type in chat-input, tap chat-send. Expected: message sent; Actual: ReferenceError in console, no message posted. Mitigation: rename `fbUser` -> `user` (already imported from useAuth on line 26)."
+}

@@ -3,6 +3,15 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 const DEVICE_ID_KEY = "@groupup/device_id";
 
+export type PublicUser = {
+  user_id: string;
+  name: string;
+  picture?: string | null;
+  gender?: "male" | "female" | "other" | null;
+  age?: number | null;
+  created_at: string;
+};
+
 export type ApiUser = {
   user_id: string;
   name: string;
@@ -92,6 +101,7 @@ export const api = {
     gender?: string;
     age?: number;
   }) => request<ApiUser>("/auth/me", { method: "PATCH", body: payload }),
+  getUser: (id: string) => request<PublicUser>(`/users/${id}`),
 
   // ---- Groups ----
   listGroups: (category?: string, q?: string) => {

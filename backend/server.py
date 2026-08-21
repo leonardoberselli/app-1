@@ -51,6 +51,15 @@ class ProfileUpdate(BaseModel):
     age: Optional[int] = Field(default=None, ge=0, le=120)
 
 
+class PublicUser(BaseModel):
+    user_id: str
+    name: str
+    picture: Optional[str] = None
+    gender: Optional[Literal["male", "female", "other"]] = None
+    age: Optional[int] = None
+    created_at: datetime
+
+
 class GroupCreate(BaseModel):
     title: str
     category: str
@@ -345,6 +354,50 @@ async def auth_update_me(payload: ProfileUpdate, user: User = Depends(get_curren
             array_filters=[{"p.user_id": user.user_id}],
         )
     return _user_from_doc(fresh)
+
+
+# ============================== Public users ==============================
+
+@api_router.get("/users/{target_id}", response_model=PublicUser)
+async def get_public_user(target_id: str, user: User = Depends(get_current_user)):
+    """Return the public profile of another user. Access is granted only if
+    the caller and the target share at least one group (participant lists
+    of any group). Callers can always view their own profile.
+    """
+    if not _DEVICE_ID_RE.match(target_id):
+        raise HTTPException(status_code=400, detail="user_id non valido")
+    target = await db.users.find_one({"user_id": target_id}, {"_id": 0})
+
+    if target_id != user.user_id:
+        # Return 403 (not 404) both when target doesn't exist and when there is
+        # no shared group. This avoids leaking device-id existence to callers.
+        if not target:
+            raise HTTPException(
+                status_code=403,
+                detail="Puoi vedere solo profili di utenti con cui condividi un gruppo",
+            )
+        shared = await db.groups.find_one(
+            {"participants.user_id": {"$all": [user.user_id, target_id]}},
+            {"_id": 0, "group_id": 1},
+        )
+        if not shared:
+            raise HTTPException(
+                status_code=403,
+                detail="Puoi vedere solo profili di utenti con cui condividi un gruppo",
+            )
+    else:
+        # target must exist for self-view (it always does because get_current_user auto-creates)
+        if not target:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+
+    return PublicUser(
+        user_id=target["user_id"],
+        name=target.get("name") or "Anonimo",
+        picture=target.get("picture"),
+        gender=target.get("gender"),
+        age=target.get("age"),
+        created_at=target["created_at"],
+    )
 
 
 # ============================== Groups ==============================

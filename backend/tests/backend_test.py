@@ -703,3 +703,163 @@ class TestModerationMessages:
                      json={"text": "TEST_ci vediamo al parco alle 18"}, headers=owner_headers)
         assert r.status_code == 200
         assert r.json()["text"] == "TEST_ci vediamo al parco alle 18"
+
+
+
+# ======================================================= Public user profile
+# GET /api/users/{target_id} — visible when caller & target share a group.
+class TestPublicUserProfile:
+    @pytest.fixture(scope="class")
+    def owner_named(self, api, owner_headers):
+        """Ensure the owner has a name so they can create groups."""
+        api.patch(f"{BASE_URL}/api/auth/me",
+                  json={"name": "Owner Name"}, headers=owner_headers)
+        yield
+
+    @pytest.fixture(scope="class")
+    def other_user(self, api):
+        """A second, fully-profiled user (no shared group yet)."""
+        did = _new_device_id("OTHER")
+        hdr = {"Authorization": f"Bearer {did}", "Content-Type": "application/json"}
+        api.patch(f"{BASE_URL}/api/auth/me",
+                  json={"name": "Bob Other", "picture": "https://pic/bob.png",
+                        "gender": "male", "age": 33}, headers=hdr)
+        return {"device_id": did, "headers": hdr}
+
+    # ---- Auth / input validation
+
+    def test_missing_auth_401(self, api):
+        r = api.get(f"{BASE_URL}/api/users/anyuser1234")
+        assert r.status_code == 401
+
+    def test_bad_bearer_401(self, api):
+        r = api.get(f"{BASE_URL}/api/users/anyuser1234",
+                    headers={"Authorization": "Bearer !!bad!!"})
+        assert r.status_code == 401
+
+    def test_malformed_target_id_400(self, api, owner_headers, owner_named):
+        # 'x' is too short (min 8)
+        r = api.get(f"{BASE_URL}/api/users/x", headers=owner_headers)
+        assert r.status_code == 400
+        assert "non valido" in r.json()["detail"].lower()
+
+    def test_malformed_target_id_bad_chars_400(self, api, owner_headers, owner_named):
+        # spaces not allowed by regex — but path encoding may hide this; use $
+        r = api.get(f"{BASE_URL}/api/users/bad$$$$id", headers=owner_headers)
+        assert r.status_code == 400
+
+    def test_nonexistent_target_404(self, api, owner_headers, owner_named):
+        # Valid regex but never seen by backend
+        did = _new_device_id("NEVER")
+        r = api.get(f"{BASE_URL}/api/users/{did}", headers=owner_headers)
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Utente non trovato"
+
+    # ---- Self view (no shared group required)
+
+    def test_self_view_no_shared_group_returns_200(self, api):
+        did = _new_device_id("SELF")
+        hdr = {"Authorization": f"Bearer {did}", "Content-Type": "application/json"}
+        api.patch(f"{BASE_URL}/api/auth/me",
+                  json={"name": "Self User", "age": 29, "gender": "female"},
+                  headers=hdr)
+        r = api.get(f"{BASE_URL}/api/users/{did}", headers=hdr)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["user_id"] == did
+        assert body["name"] == "Self User"
+        assert body["age"] == 29
+        assert body["gender"] == "female"
+        # PublicUser must NOT expose profile_complete
+        assert "profile_complete" not in body
+
+    def test_public_user_payload_shape(self, api, owner_headers, owner_named):
+        # PublicUser fields: user_id, name, picture, gender, age, created_at
+        r = api.get(f"{BASE_URL}/api/users/{_extract_owner_from(owner_headers)}",
+                    headers=owner_headers)
+        assert r.status_code == 200
+        body = r.json()
+        for k in ("user_id", "name", "picture", "gender", "age", "created_at"):
+            assert k in body, f"missing {k} in PublicUser payload"
+
+    # ---- Access control based on shared group membership
+
+    def test_no_shared_group_returns_403(self, api, owner_headers, other_user):
+        # owner never joined a group with other_user
+        r = api.get(f"{BASE_URL}/api/users/{other_user['device_id']}",
+                    headers=owner_headers)
+        assert r.status_code == 403
+        assert r.json()["detail"] == (
+            "Puoi vedere solo profili di utenti con cui condividi un gruppo"
+        )
+
+    def test_shared_group_allows_view_both_directions(
+        self, api, owner_headers, owner_device, other_user, owner_named
+    ):
+        # Create a group as owner, other joins → they share a group.
+        r = api.post(f"{BASE_URL}/api/groups",
+                     json=_group_payload(title="TEST_profile_share"),
+                     headers=owner_headers)
+        assert r.status_code == 200, r.text
+        gid = r.json()["group_id"]
+        r = api.post(f"{BASE_URL}/api/groups/{gid}/join",
+                     headers=other_user["headers"])
+        assert r.status_code == 200, r.text
+
+        # Owner → Other
+        r = api.get(f"{BASE_URL}/api/users/{other_user['device_id']}",
+                    headers=owner_headers)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["user_id"] == other_user["device_id"]
+        assert body["name"] == "Bob Other"
+        assert body["age"] == 33
+        assert body["gender"] == "male"
+        assert body["picture"] == "https://pic/bob.png"
+
+        # Other → Owner
+        r = api.get(f"{BASE_URL}/api/users/{owner_device}",
+                    headers=other_user["headers"])
+        assert r.status_code == 200, r.text
+        assert r.json()["user_id"] == owner_device
+        assert r.json()["name"] == "Owner Name"
+
+    def test_leaving_group_removes_access_403(
+        self, api, owner_headers, owner_device, owner_named
+    ):
+        # Fresh third user, they join then leave → no longer share a group.
+        did = _new_device_id("OTHER")
+        hdr = {"Authorization": f"Bearer {did}", "Content-Type": "application/json"}
+        api.patch(f"{BASE_URL}/api/auth/me",
+                  json={"name": "Leaver"}, headers=hdr)
+        r = api.post(f"{BASE_URL}/api/groups",
+                     json=_group_payload(title="TEST_profile_leave"),
+                     headers=owner_headers)
+        gid = r.json()["group_id"]
+        api.post(f"{BASE_URL}/api/groups/{gid}/join", headers=hdr)
+        # Sanity: while joined, both can see each other
+        r = api.get(f"{BASE_URL}/api/users/{did}", headers=owner_headers)
+        assert r.status_code == 200
+        # Now leave and re-check
+        api.post(f"{BASE_URL}/api/groups/{gid}/leave", headers=hdr)
+        r = api.get(f"{BASE_URL}/api/users/{did}", headers=owner_headers)
+        assert r.status_code == 403
+        r = api.get(f"{BASE_URL}/api/users/{owner_device}", headers=hdr)
+        assert r.status_code == 403
+
+    def test_endpoint_auto_creates_caller_not_target(self, api):
+        # Fresh device with NO prior request — the endpoint's dep should
+        # auto-create the caller, but the target (also new) must 404.
+        caller = _new_device_id("TESTDEV")
+        target = _new_device_id("NEVER")
+        hdr = {"Authorization": f"Bearer {caller}", "Content-Type": "application/json"}
+        r = api.get(f"{BASE_URL}/api/users/{target}", headers=hdr)
+        assert r.status_code == 404
+        # Caller now exists in db (auto-created)
+        assert db.users.count_documents({"user_id": caller}) == 1
+        # Target was NOT created
+        assert db.users.count_documents({"user_id": target}) == 0
+
+
+def _extract_owner_from(headers: dict) -> str:
+    return headers["Authorization"].split(" ", 1)[1]
