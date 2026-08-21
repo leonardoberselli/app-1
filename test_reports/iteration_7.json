@@ -1,0 +1,63 @@
+{
+  "summary": "Backend: 48/48 pytest tests pass (39 pre-existing + 9 new for expired-group auto-purge). The new suite covers: (a) expired group + its messages purged on GET /api/groups (cascade to db.messages), (b) purged on GET /api/groups/{id} (→404), (c) purged on GET /api/groups/mine, (d) today+2h group kept, (e) group 1h in the past (within 3h buffer) kept, (f) malformed date/time leaves group in place without crashing, (g) 30s in-request throttle observed, (h) POST /api/groups rejects date+time already in past with 400 'Data del gruppo nel passato', (i) POST /api/groups rejects unparseable date. Frontend: zero-friction flow works end-to-end — /onboarding shown on fresh device, name submit lands on /(tabs) home-screen with 'Ciao, Marco' greeting, and the feed lists 2 groups without crashing. Two pre-existing issues surfaced during this run: (1) `_group_payload` used a hardcoded date '2026-02-15' which is now in the past (system date 2026-08-21) — updated to dynamic future date; (2) seed data for 'Basket al parco' has `date` stored as '12/07/2026' (Italian DD/MM/YYYY) instead of the required 'YYYY-MM-DD', so it silently bypasses the purge and appears as an already-past group in the feed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "server.py:_purge_expired_groups + startup",
+        "issue": "The background force-purge on startup sets _last_purge_at = loop.time(), which then throttles ALL in-request purges for 30 seconds after every backend restart. Effect: for ~30s after a deploy/restart no expired groups are cleaned via HTTP hits (the next bg loop runs 5 min later). Consider having the startup bg loop NOT update the throttle timestamp, or use `force=True` inside the endpoints on the first N seconds after boot."
+      },
+      {
+        "endpoint": "POST /api/groups",
+        "issue": "Only rejects when event_dt + 3h < now (buffer applied at creation too). Consider whether creators should be prevented from posting events already inside the buffer window (i.e. reject if event_dt < now)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "seed data — group 'Basket al parco'",
+        "issue": "Stored `date` is '12/07/2026' (Italian DD/MM/YYYY) but the schema expects 'YYYY-MM-DD'. Because _event_datetime() can't parse it, the purge treats it as 'malformed' and never removes the group. It also displays as an apparently-expired card in the feed (Aug 21 today, card shows 12/07/2026). Fix: update the seed row to '2026-07-12' (in which case it will be auto-purged as expected) or, more likely, to a real future date. Reference: db.groups document with title='Basket al parco'.",
+        "testID": "group-card-*",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "app-wide",
+        "issues": [
+          "React Native Web console warnings persist: 'shadow*' style props deprecated (use 'boxShadow'); 'props.pointerEvents' deprecated (use style.pointerEvents). Same issues reported in iteration_5 & 6 — non-blocking."
+        ]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix the seed row for 'Basket al parco' — its `date` field is stored as '12/07/2026' but must be YYYY-MM-DD (e.g. '2026-09-15'). Wherever the initial seed script lives (backend startup, DB migration, or a manual mongoshell entry), correct the format so the purge either removes it (if past) or displays it correctly.",
+    "OPTIONAL: address the 30-second throttle blind-spot after each backend restart in _purge_expired_groups (see backend_issues.minor).",
+    "OPTIONAL cleanup already listed in iteration_6: remove expo-secure-store from app.json plugins; remove firebase-admin from backend/requirements.txt; migrate deprecated RN Web style props."
+  ],
+  "critical_code_review_comments": [
+    "server.py: expiration logic is clean and correct — _event_datetime() safely returns None on malformed strings, purge cascades to db.messages, background loop force-purges every 5 min, in-request purge is idempotent + throttled.",
+    "server.py: 30s throttle uses loop.time() which is monotonic; the startup bg loop force-purge updates _last_purge_at, causing a 30s blackout for in-request purges right after boot. Minor but worth noting.",
+    "server.py POST /groups: correctly rejects both malformed date/time (400 'Data/ora non valide') and past dates (400 'Data del gruppo nel passato'). No ObjectId leaks; _strip removes _id.",
+    "backend_test.py previously used a fixed hardcoded date ('2026-02-15') that broke once we crossed that date + added the past-date validation. Now uses `datetime.now() + timedelta(days=30)` so it never rots."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py — added `TestExpiredGroupPurge` class (9 new tests), fixed hardcoded date in _group_payload to be dynamic, added TESTDEV_seed cleanup to session teardown."
+  ],
+  "success_rate": {
+    "backend": "100% (48/48)",
+    "frontend": "100% on the zero-friction flow (onboarding → tabs → feed renders); one seed data quirk noted"
+  },
+  "seed_data_creation": "Test-only groups (title prefix TEST_) and users (device_id prefixes OWNER_/OTHER_/TESTDEV_/TESTDEV_seed) are auto-created by tests and cleaned up by the session-scoped `api` fixture teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend tests take ~3-4 minutes due to two required waits: (1) the reset_backend_for_purge class fixture restarts the backend and sleeps 32s so that the startup bg-loop's force-purge throttle window ages out; (2) each in-request purge test then waits 31s to let the 30s per-request throttle age out. Do NOT reduce these sleeps. To re-run: `pytest /app/backend/tests/backend_test.py -v`.",
+  "rca_of_issue": "Not applicable — no functional bug found in the new expiration/purge feature. The only two minor findings are: (a) startup 30s throttle blind-spot (see backend_issues.minor) and (b) seed data 'Basket al parco' stored `date` in the wrong format so it slips through the purge (see frontend_issues.ui_bugs)."
+}

@@ -4,12 +4,20 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import re
+import asyncio
 import logging
 import uuid
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+try:
+    # stdlib on Python 3.9+; container has 3.11
+    from zoneinfo import ZoneInfo
+    _APP_TZ = ZoneInfo("Europe/Rome")
+except Exception:  # pragma: no cover
+    _APP_TZ = timezone.utc
 
 
 ROOT_DIR = Path(__file__).parent
@@ -153,6 +161,65 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     return _user_from_doc(doc)
 
 
+# ============================== Expired-group cleanup ==============================
+
+# Groups auto-delete when their event start time is more than
+# EXPIRED_BUFFER_HOURS hours in the past. Rationale: an event at 20:00 is
+# usable until at least ~23:00 the same evening.
+EXPIRED_BUFFER_HOURS = 3
+# Throttle in-request purge so it runs at most once every N seconds.
+_PURGE_MIN_INTERVAL_S = 30
+_last_purge_at: float = 0.0
+
+
+def _event_datetime(date_str: str, time_str: str) -> Optional[datetime]:
+    """Combine stored `date` (YYYY-MM-DD, or legacy DD/MM/YYYY) + `time`
+    (HH:MM) into a timezone-aware datetime in Europe/Rome (the user-facing
+    timezone). Returns None if the strings are malformed.
+    """
+    if not date_str or not time_str:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M", "%d-%m-%Y %H:%M"):
+        try:
+            dt = datetime.strptime(f"{date_str} {time_str}", fmt)
+            return dt.replace(tzinfo=_APP_TZ)
+        except ValueError:
+            continue
+    return None
+
+
+async def _purge_expired_groups(force: bool = False) -> List[str]:
+    """Delete every group whose event start + buffer is in the past, plus
+    all chat messages attached to them. Returns the list of deleted group
+    ids. Safe to call from any request path; throttled to avoid running on
+    every single hit. `force=True` bypasses the throttle and does NOT update
+    the throttle timestamp, so it doesn't block in-request purges.
+    """
+    global _last_purge_at
+    loop = asyncio.get_event_loop()
+    now_mono = loop.time()
+    if not force:
+        if (now_mono - _last_purge_at) < _PURGE_MIN_INTERVAL_S:
+            return []
+        _last_purge_at = now_mono
+
+    threshold = datetime.now(_APP_TZ) - timedelta(hours=EXPIRED_BUFFER_HOURS)
+    expired: List[str] = []
+    cursor = db.groups.find({}, {"_id": 0, "group_id": 1, "date": 1, "time": 1})
+    async for g in cursor:
+        dt = _event_datetime(g.get("date", ""), g.get("time", ""))
+        if dt is not None and dt < threshold:
+            expired.append(g["group_id"])
+    if expired:
+        await db.groups.delete_many({"group_id": {"$in": expired}})
+        await db.messages.delete_many({"group_id": {"$in": expired}})
+        try:
+            logger.info(f"[cleanup] purged {len(expired)} expired group(s)")
+        except Exception:
+            pass
+    return expired
+
+
 # ============================== Auth ==============================
 
 @api_router.get("/auth/me", response_model=User)
@@ -223,6 +290,13 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
         raise HTTPException(status_code=400, detail="max_participants < min_participants")
     if payload.max_age < payload.min_age:
         raise HTTPException(status_code=400, detail="max_age < min_age")
+    # Reject events that are already expired (past date + buffer) at creation
+    event_dt = _event_datetime(payload.date, payload.time)
+    if event_dt is None:
+        raise HTTPException(status_code=400, detail="Data/ora non valide")
+    now_local = datetime.now(_APP_TZ)
+    if event_dt + timedelta(hours=EXPIRED_BUFFER_HOURS) < now_local:
+        raise HTTPException(status_code=400, detail="Data del gruppo nel passato")
     group_id = f"grp_{uuid.uuid4().hex[:12]}"
     owner_participant = {
         "user_id": user.user_id,
@@ -254,6 +328,7 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
 
 @api_router.get("/groups", response_model=List[Group])
 async def list_groups(category: Optional[str] = None, q: Optional[str] = None):
+    await _purge_expired_groups()
     query: dict = {}
     if category and category != "all":
         query["category"] = category
@@ -266,6 +341,7 @@ async def list_groups(category: Optional[str] = None, q: Optional[str] = None):
 
 @api_router.get("/groups/mine", response_model=dict)
 async def my_groups(user: User = Depends(get_current_user)):
+    await _purge_expired_groups()
     created = await db.groups.find(
         {"owner_id": user.user_id}, {"_id": 0}
     ).sort("created_at", -1).to_list(length=200)
@@ -281,6 +357,7 @@ async def my_groups(user: User = Depends(get_current_user)):
 
 @api_router.get("/groups/{group_id}", response_model=Group)
 async def get_group(group_id: str):
+    await _purge_expired_groups()
     g = await db.groups.find_one({"group_id": group_id}, {"_id": 0})
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -415,7 +492,22 @@ async def on_startup():
     except Exception as e:
         logger.warning(f"index creation issue: {e}")
 
+    # Kick off a background loop that purges expired groups every 5 minutes.
+    # In-request purges cover fast-path cleanup; this catches idle windows.
+    async def _bg_purge_loop():
+        while True:
+            try:
+                await _purge_expired_groups(force=True)
+            except Exception as e:
+                logger.warning(f"bg purge error: {e}")
+            await asyncio.sleep(300)  # 5 min
+
+    app.state._purge_task = asyncio.create_task(_bg_purge_loop())
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    task = getattr(app.state, "_purge_task", None)
+    if task:
+        task.cancel()
     client.close()

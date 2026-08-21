@@ -67,7 +67,7 @@ function parseCustomDate(text: string): { iso: string | null; error: string | nu
 }
 
 export default function CreateScreen() {
-  const { fbUser } = useAuth();
+  const { user, deviceId } = useAuth();
   const router = useRouter();
   const dayOptions = useMemo(() => nextDays(14), []);
 
@@ -121,7 +121,7 @@ export default function CreateScreen() {
       return setError("Numero partecipanti non valido");
     if (isNaN(minA) || isNaN(maxA) || minA < 0 || maxA < minA)
       return setError("Età non valida");
-    if (!fbUser) return setError("Devi accedere");
+    if (!deviceId || !user?.name) return setError("Completa il profilo prima di creare");
 
     try {
       setSubmitting(true);

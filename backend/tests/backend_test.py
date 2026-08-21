@@ -7,7 +7,7 @@ Auth model: Authorization: Bearer <device_id> where device_id matches
 import os
 import uuid
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pytest
 import requests
@@ -52,6 +52,7 @@ def api(owner_device):
     yield s
     # Cleanup: our test docs are all keyed to prefixed device ids
     db.groups.delete_many({"title": {"$regex": "^TEST_"}})
+    db.groups.delete_many({"owner_id": {"$regex": "^TESTDEV_seed"}})
     db.messages.delete_many({"text": {"$regex": "^TEST_"}})
     db.users.delete_many({"user_id": {"$regex": "^(OWNER|OTHER|TESTDEV|SHORT)"}})
 
@@ -159,13 +160,16 @@ class TestAuthMePatch:
 # ======================================================= Groups
 def _group_payload(title=None, category="basketball", label="Basket",
                    min_p=2, max_p=10, min_a=18, max_a=40):
+    # Use a dynamic future date so tests keep working over time and pass the
+    # server-side "no past date" check.
+    future = datetime.now(timezone.utc) + timedelta(days=30)
     return {
         "title": title or f"TEST_grp_{uuid.uuid4().hex[:6]}",
         "category": category,
         "category_label": label,
         "location": "Milano",
         "description": "created by backend_test",
-        "date": "2026-02-15",
+        "date": future.strftime("%Y-%m-%d"),
         "time": "18:30",
         "min_participants": min_p,
         "max_participants": max_p,
@@ -385,3 +389,190 @@ class TestNoLegacyEndpoints:
     def test_gone(self, api, path):
         r = api.post(f"{BASE_URL}{path}", json={})
         assert r.status_code == 404
+
+
+
+# ======================================================= Expired-group auto-purge
+# The backend removes groups whose event date+time+3h buffer is in the past. The
+# purge runs on GET /api/groups, GET /api/groups/{id}, GET /api/groups/mine
+# (throttled to once every 30s) and via a 5-minute background force loop. To
+# force a fresh purge window per test we restart the backend once before this
+# class (resets _last_purge_at=0), then wait 31s between purge-triggering
+# assertions so the in-request throttle doesn't swallow the call.
+import subprocess
+import time
+from zoneinfo import ZoneInfo
+
+APP_TZ = ZoneInfo("Europe/Rome")
+
+
+def _seed_group_doc(*, date: str, time_str: str, title: str, owner_id: str = "TESTDEV_seed",
+                    group_id: str = None) -> str:
+    """Insert a group directly via motor bypassing POST validation so we can
+    plant already-expired events (POST /groups blocks past dates)."""
+    gid = group_id or f"grp_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "group_id": gid,
+        "title": title,
+        "category": "basketball",
+        "category_label": "Basket",
+        "location": "Milano",
+        "description": "seed",
+        "date": date,
+        "time": time_str,
+        "min_participants": 2,
+        "max_participants": 10,
+        "min_age": 18,
+        "max_age": 40,
+        "owner_id": owner_id,
+        "owner_name": "Seed Owner",
+        "owner_picture": None,
+        "participants": [{"user_id": owner_id, "name": "Seed Owner", "picture": None}],
+        "created_at": datetime.now(timezone.utc),
+    }
+    db.groups.insert_one(doc)
+    return gid
+
+
+@pytest.fixture(scope="class")
+def reset_backend_for_purge():
+    """Restart backend so the in-process 30s purge throttle is reset, then
+    wait long enough for the startup force-purge to age out so subsequent
+    in-request purges actually run."""
+    subprocess.run(["sudo", "supervisorctl", "restart", "backend"], check=False,
+                   capture_output=True)
+    # Wait for backend to come back up (health check)
+    for _ in range(30):
+        try:
+            r = requests.get(f"{BASE_URL}/api/", timeout=2)
+            if r.status_code == 200:
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+    # The startup background loop force-purges immediately on boot which sets
+    # _last_purge_at → any in-request purge within 30s will be throttled. Wait
+    # it out so the very first test's purge actually runs.
+    time.sleep(32)
+    yield
+
+
+@pytest.mark.usefixtures("reset_backend_for_purge")
+class TestExpiredGroupPurge:
+    """Auto-purge of groups whose event datetime + 3h buffer is in the past."""
+
+    def test_expired_group_purged_on_list_and_messages_cascade(self, api, owner_headers):
+        # Seed one already-expired group (yesterday 18:00) with two messages.
+        yesterday = (datetime.now(APP_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
+        gid = _seed_group_doc(date=yesterday, time_str="18:00", title="TEST_expired_list")
+        db.messages.insert_one({
+            "message_id": f"msg_{uuid.uuid4().hex[:12]}",
+            "group_id": gid, "user_id": "TESTDEV_seed", "user_name": "Seed",
+            "user_picture": None, "text": "TEST_before_purge",
+            "created_at": datetime.now(timezone.utc),
+        })
+        assert db.groups.count_documents({"group_id": gid}) == 1
+        assert db.messages.count_documents({"group_id": gid}) == 1
+
+        # Trigger purge via public list endpoint.
+        r = api.get(f"{BASE_URL}/api/groups")
+        assert r.status_code == 200
+        assert gid not in [g["group_id"] for g in r.json()]
+        # Verify DB cascade.
+        assert db.groups.count_documents({"group_id": gid}) == 0
+        assert db.messages.count_documents({"group_id": gid}) == 0
+
+    def test_expired_group_purged_on_get_detail_returns_404(self, api):
+        # Wait for throttle window (30s) to elapse since previous test triggered purge.
+        time.sleep(31)
+        yesterday = (datetime.now(APP_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
+        gid = _seed_group_doc(date=yesterday, time_str="10:00", title="TEST_expired_detail")
+        r = api.get(f"{BASE_URL}/api/groups/{gid}")
+        # Group is purged before the find_one → 404
+        assert r.status_code == 404
+        assert db.groups.count_documents({"group_id": gid}) == 0
+
+    def test_expired_group_purged_on_mine(self, api, owner_headers, owner_device):
+        time.sleep(31)
+        yesterday = (datetime.now(APP_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
+        gid = _seed_group_doc(date=yesterday, time_str="09:00",
+                              title="TEST_expired_mine", owner_id=owner_device)
+        r = api.get(f"{BASE_URL}/api/groups/mine", headers=owner_headers)
+        assert r.status_code == 200
+        assert gid not in [g["group_id"] for g in r.json()["created"]]
+        assert db.groups.count_documents({"group_id": gid}) == 0
+
+    def test_today_future_group_kept(self, api):
+        time.sleep(31)
+        # Event today + 2h — well before the 3h buffer expires
+        future = datetime.now(APP_TZ) + timedelta(hours=2)
+        gid = _seed_group_doc(
+            date=future.strftime("%Y-%m-%d"),
+            time_str=future.strftime("%H:%M"),
+            title="TEST_future_kept",
+        )
+        r = api.get(f"{BASE_URL}/api/groups")
+        assert r.status_code == 200
+        assert gid in [g["group_id"] for g in r.json()]
+        assert db.groups.count_documents({"group_id": gid}) == 1
+        db.groups.delete_one({"group_id": gid})  # cleanup
+
+    def test_within_buffer_group_kept(self, api):
+        time.sleep(31)
+        # Event 1h in the past — still within the 3h buffer, must survive
+        past = datetime.now(APP_TZ) - timedelta(hours=1)
+        gid = _seed_group_doc(
+            date=past.strftime("%Y-%m-%d"),
+            time_str=past.strftime("%H:%M"),
+            title="TEST_buffer_kept",
+        )
+        r = api.get(f"{BASE_URL}/api/groups")
+        assert r.status_code == 200
+        assert gid in [g["group_id"] for g in r.json()]
+        assert db.groups.count_documents({"group_id": gid}) == 1
+        db.groups.delete_one({"group_id": gid})
+
+    def test_malformed_date_group_left_in_place(self, api):
+        time.sleep(31)
+        # Malformed date should NOT crash purge; group should also NOT be deleted.
+        gid = _seed_group_doc(date="not-a-date", time_str="99:99",
+                              title="TEST_malformed")
+        r = api.get(f"{BASE_URL}/api/groups")
+        assert r.status_code == 200
+        # Group stays in DB (unparsable → skipped by purge, not deleted).
+        assert db.groups.count_documents({"group_id": gid}) == 1
+        db.groups.delete_one({"group_id": gid})  # cleanup
+
+    def test_purge_is_throttled_within_30s(self, api):
+        # First call runs purge; second call within 30s must be a no-op.
+        time.sleep(31)
+        yesterday = (datetime.now(APP_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
+        # Seed group #1 and trigger purge → it should be deleted.
+        gid1 = _seed_group_doc(date=yesterday, time_str="12:00",
+                               title="TEST_throttle_1")
+        assert api.get(f"{BASE_URL}/api/groups").status_code == 200
+        assert db.groups.count_documents({"group_id": gid1}) == 0
+
+        # Immediately seed group #2 and trigger again — throttle should keep it.
+        gid2 = _seed_group_doc(date=yesterday, time_str="12:00",
+                               title="TEST_throttle_2")
+        assert api.get(f"{BASE_URL}/api/groups").status_code == 200
+        # Still there — throttle prevented purge from running again.
+        assert db.groups.count_documents({"group_id": gid2}) == 1
+        db.groups.delete_one({"group_id": gid2})
+
+    def test_create_group_rejects_past_date(self, api, owner_headers):
+        past_date = (datetime.now(APP_TZ) - timedelta(days=2)).strftime("%Y-%m-%d")
+        payload = _group_payload(title="TEST_reject_past")
+        payload["date"] = past_date
+        payload["time"] = "10:00"
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400
+        assert "passato" in r.json()["detail"].lower()
+
+    def test_create_group_rejects_invalid_date_format(self, api, owner_headers):
+        payload = _group_payload(title="TEST_bad_date")
+        payload["date"] = "not-a-date"
+        payload["time"] = "10:00"
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400
