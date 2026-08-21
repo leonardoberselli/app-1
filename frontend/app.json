@@ -11,18 +11,9 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.leonardo.groupup",
-      "usesAppleSignIn": true,
-      "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Scegli una foto per il tuo profilo",
-        "NSCameraUsageDescription": "Scatta una foto per il tuo profilo",
-        "CFBundleURLTypes": [
-          {
-            "CFBundleURLSchemes": [
-              "com.googleusercontent.apps.297410719787-pvhg23vbe26bhu5bqn1bgg3j7fcoq3eq"
-            ]
-          }
-        ]
+        "NSCameraUsageDescription": "Scatta una foto per il tuo profilo"
       }
     },
     "android": {
@@ -32,7 +23,6 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.leonardo.groupup",
-      "googleServicesFile": "./google-services.json",
       "permissions": [
         "READ_MEDIA_IMAGES"
       ]
@@ -61,7 +51,6 @@
         }
       ],
       "expo-font",
-      "@react-native-google-signin/google-signin",
       "expo-build-properties"
     ],
     "experiments": {

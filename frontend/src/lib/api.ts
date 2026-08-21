@@ -1,17 +1,15 @@
-import { auth } from "./firebase";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+const DEVICE_ID_KEY = "@groupup/device_id";
 
 export type ApiUser = {
   user_id: string;
-  email: string;
   name: string;
   picture?: string | null;
   gender?: "male" | "female" | "other" | null;
   age?: number | null;
   profile_complete?: boolean;
-  email_verified?: boolean;
-  providers?: string[];
   created_at: string;
 };
 
@@ -51,11 +49,12 @@ export type ApiMessage = {
   created_at: string;
 };
 
-async function getIdToken(force = false): Promise<string | null> {
-  const u = auth.currentUser;
-  if (!u) return null;
+async function getDeviceId(): Promise<string | null> {
+  // auth.tsx exposes the current id synchronously via globalThis for perf.
+  const cached = (globalThis as any).__GROUPUP_DEVICE_ID__;
+  if (typeof cached === "string" && cached.length > 0) return cached;
   try {
-    return await u.getIdToken(force);
+    return await AsyncStorage.getItem(DEVICE_ID_KEY);
   } catch {
     return null;
   }
@@ -67,8 +66,8 @@ async function request<T>(
 ): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (opts.auth !== false) {
-    const token = await getIdToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
+    const id = await getDeviceId();
+    if (id) headers.Authorization = `Bearer ${id}`;
   }
   const res = await fetch(`${BASE}/api${path}`, {
     method: opts.method || "GET",

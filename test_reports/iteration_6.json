@@ -1,0 +1,71 @@
+{
+  "summary": "Backend: 39/39 pytest tests pass against the new device-UUID Bearer auth model (auto-create user, PATCH /auth/me completeness rules, name/picture propagation to groups/participants, groups CRUD, public list/detail, mine, join dedup + capacity, owner-cannot-leave, delete cascades messages, message participant gating, legacy Firebase endpoints all 404). Frontend: onboarding screen renders on first web load without any login UI, device id is generated (dev_<hex32>) and stored under @groupup/device_id, PATCH /auth/me works from the browser, profile tab shows the entered name plus 'ID: dev_...' (NO email field), 'Reimposta account' generates a new device id and re-opens onboarding, and subsequent loads with a complete profile skip onboarding. CRITICAL FRONTEND BUG: (tabs)/_layout.tsx gates tabs behind user.profile_complete, so after the lightweight onboarding (name only) the user is force-redirected to /profile-edit?mode=onboarding and can NEVER enter the tabs until picture+gender+age are also filled — this contradicts the review requirement 'Submitting the name on onboarding routes to the tabs (feed)'.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "requirements.txt", "issue": "firebase-admin may still be listed in backend/requirements.txt (harmless, but dead dependency — remove to reduce install size)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "app/(tabs)/_layout.tsx",
+        "issue": "CRITICAL: `if (!user.profile_complete) return <Redirect href=\"/profile-edit?mode=onboarding\" />;` (line 13) forces the user through the full profile-edit screen after the lightweight name-only onboarding. Because backend `profile_complete` requires name AND gender AND age AND picture, the promised zero-friction flow is broken — you cannot reach the tabs by just entering a name. Either drop this gate (only gate on `!user.name`), or change backend `profile_complete` to be name-only.",
+        "testID": "profile-edit-screen",
+        "priority": "CRITICAL"
+      },
+      {
+        "component": "app/(tabs)/_layout.tsx",
+        "issue": "Dead redirect: line 12 still points to `/login` (`<Redirect href=\"/login\" />`), but the /login route was removed with Firebase. If `user` ever becomes null the app would 404. Replace with `<Redirect href=\"/onboarding\" />` or `<Redirect href=\"/\" />`.",
+        "testID": "",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "onboarding -> tabs",
+        "issue": "onboarding.tsx submits name via PATCH /auth/me and calls router.replace('/(tabs)'), but the (tabs) layout immediately bounces back to /profile-edit?mode=onboarding because profile_complete is false. Reproduced end-to-end in the web preview.",
+        "affected_testIDs": ["onboarding-screen", "onboarding-submit", "profile-edit-screen"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "app-wide",
+        "issues": [
+          "React Native Web console warnings: `shadow*` style props deprecated (should be `boxShadow`); `props.pointerEvents` deprecated (should be `style.pointerEvents`). Non-blocking but noisy — same warnings already flagged in iteration_5."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {
+        "component": "app.json plugins",
+        "issue": "`expo-secure-store` still declared in app.json plugins although the migration to AsyncStorage device-id means it is unused. Remove to reduce native footprint. Reference: /app/frontend/app.json (plugins array)."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix app/(tabs)/_layout.tsx: change gate from `!user.profile_complete` to `!user.name` (or remove the gate entirely) so lightweight name-only onboarding actually lets the user reach the feed as the PRD requires.",
+    "Replace or remove the `<Redirect href=\"/login\" />` fallback on line 12 of (tabs)/_layout.tsx — /login no longer exists.",
+    "Optional: remove `expo-secure-store` from app.json plugins and `firebase-admin` from backend/requirements.txt now that both are unused.",
+    "Optional cleanup: address RN web `shadow*` / `pointerEvents` deprecation warnings in the shared button/card styles."
+  ],
+  "critical_code_review_comments": [
+    "server.py: clean, well-structured, all IO async, no ObjectId leak (`_strip` drops `_id`), device-id regex correctly enforced, legacy `email_1` unique index dropped on startup, `_user_from_doc` strips obsolete Firebase fields — good hygiene.",
+    "auth.tsx: `makeId` correctly uses `crypto.getRandomValues` when available and falls back to Math.random; device id is exposed globally so api.ts can read it synchronously — pragmatic and works.",
+    "api.ts: `request` always awaits `getDeviceId()` even for public routes (auth:false path still short-circuits before setting header) — no functional issue but consider caching.",
+    "(tabs)/_layout.tsx: gate is the single point of failure for the zero-friction UX (see UI bug above)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (rewritten for device-UUID auth model — replaced Firebase-based fixtures)."
+  ],
+  "success_rate": {"backend": "100% (39/39)", "frontend": "70% (name-only onboarding->tabs flow is broken by the profile_complete gate; everything else — onboarding UI, device id gen, PATCH /auth/me, reset device, profile display without email, skip-onboarding-on-reload — works)"},
+  "seed_data_creation": "Test-only devices prefixed OWNER_/OTHER_/TESTDEV_ are auto-created by GET /auth/me and cleaned up in the session fixture teardown (users, groups TEST_*, messages TEST_*).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend suite lives at /app/backend/tests/backend_test.py and now targets the device-UUID model — reuse it. To reproduce the frontend bug: 1) open the preview URL, 2) clear localStorage, 3) reload — onboarding-screen appears, 4) enter a name and tap ENTRA — the app lands on /profile-edit?mode=onboarding instead of /(tabs). Fix is in app/(tabs)/_layout.tsx (see action_items). Once the main agent fixes the gate, retest: after name submit expect URL to become /(tabs) and the profile tab to show the entered name.",
+  "rca_of_issue": "The Firebase→device-UUID migration replaced /login and the heavyweight onboarding, but the previously-added `if (!user.profile_complete) return <Redirect href=\"/profile-edit?mode=onboarding\" />` guard in (tabs)/_layout.tsx was left in place. Because backend `profile_complete` is only true when name AND picture AND gender AND age are all set, this guard makes the new lightweight onboarding cosmetic — the user is always bounced into the full profile form before seeing the feed. Mitigation: relax the gate to just `!user.name` (or drop the gate and rely on the index.tsx redirect that already sends users with an empty name to /onboarding)."
+}

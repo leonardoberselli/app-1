@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import re
 import logging
 import uuid
 from pathlib import Path
@@ -10,22 +11,9 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 from datetime import datetime, timezone
 
-import firebase_admin
-from firebase_admin import credentials as fb_credentials, auth as fb_auth
-
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
-
-# ============================== Firebase Admin ==============================
-_service_account_path = ROOT_DIR / "secrets" / "firebase-admin.json"
-if not firebase_admin._apps:
-    if _service_account_path.exists():
-        _cred = fb_credentials.Certificate(str(_service_account_path))
-        firebase_admin.initialize_app(_cred)
-    else:
-        # Fallback: application default (used in CI or when file missing)
-        firebase_admin.initialize_app()
 
 # ============================== MongoDB ==============================
 mongo_url = os.environ['MONGO_URL']
@@ -39,15 +27,12 @@ api_router = APIRouter(prefix="/api")
 # ============================== Models ==============================
 
 class User(BaseModel):
-    user_id: str            # Firebase UID
-    email: str
-    name: str
+    user_id: str            # Device UUID (bearer token)
+    name: str = ""
     picture: Optional[str] = None
     gender: Optional[Literal["male", "female", "other"]] = None
     age: Optional[int] = None
     profile_complete: bool = False
-    email_verified: bool = False
-    providers: List[str] = []
     created_at: datetime
 
 
@@ -117,59 +102,41 @@ def _strip(d: dict) -> dict:
     return d
 
 
+_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{8,128}$")
+
+
 def _user_from_doc(doc: dict) -> User:
     doc = _strip(dict(doc))
-    doc.setdefault("providers", [])
-    doc.setdefault("email_verified", False)
+    # Drop obsolete Firebase fields if present
+    for k in ("email", "email_verified", "providers"):
+        doc.pop(k, None)
+    doc.setdefault("name", "")
+    doc.setdefault("picture", None)
+    doc.setdefault("gender", None)
+    doc.setdefault("age", None)
+    doc.setdefault("profile_complete", False)
     return User(**doc)
 
 
-async def _get_or_create_user(decoded: dict) -> dict:
-    """Find or create the MongoDB user document keyed by Firebase UID.
+async def _get_or_create_user(device_id: str) -> dict:
+    """Find or create a MongoDB user keyed by the device UUID.
 
-    Firebase Auth is the source of truth for identity (uid, email, providers,
-    email_verified). MongoDB stores extra profile data (gender, age, picture,
-    profile_complete) and joins to app data (groups, messages).
+    There is no login: the frontend sends a locally-generated device UUID as a
+    Bearer token; we treat it as the user_id. The first call for a new device
+    auto-creates an empty profile; the user then fills in name (mandatory) and
+    optionally photo/gender/age via /auth/me.
     """
-    uid: str = decoded["uid"]
-    email: str = (decoded.get("email") or "").lower()
-    name: str = decoded.get("name") or (email.split("@")[0] if email else f"user_{uid[:6]}")
-    picture: Optional[str] = decoded.get("picture")
-    email_verified: bool = bool(decoded.get("email_verified", False))
-    # Provider list (e.g. ["password"], ["google.com"], ["apple.com"])
-    firebase = decoded.get("firebase", {}) or {}
-    providers: List[str] = list(firebase.get("sign_in_provider", "") and
-                                [firebase.get("sign_in_provider")] or [])
-
-    existing = await db.users.find_one({"user_id": uid}, {"_id": 0})
+    existing = await db.users.find_one({"user_id": device_id}, {"_id": 0})
     if existing:
-        updates: dict = {}
-        if email and existing.get("email") != email:
-            updates["email"] = email
-        # keep name from Firebase profile if user hasn't changed it manually
-        if existing.get("email_verified") != email_verified:
-            updates["email_verified"] = email_verified
-        if picture and not existing.get("picture"):
-            updates["picture"] = picture
-        # Merge providers list
-        merged = list(dict.fromkeys((existing.get("providers") or []) + providers))
-        if merged != existing.get("providers"):
-            updates["providers"] = merged
-        if updates:
-            await db.users.update_one({"user_id": uid}, {"$set": updates})
-            existing.update(updates)
         return existing
 
     doc = {
-        "user_id": uid,
-        "email": email,
-        "name": name,
-        "picture": picture,
+        "user_id": device_id,
+        "name": "",
+        "picture": None,
         "gender": None,
         "age": None,
         "profile_complete": False,
-        "email_verified": email_verified,
-        "providers": providers,
         "created_at": _now(),
     }
     await db.users.insert_one(dict(doc))
@@ -178,18 +145,11 @@ async def _get_or_create_user(decoded: dict) -> dict:
 
 async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing token")
-    token = authorization.split(" ", 1)[1].strip()
-    try:
-        decoded = fb_auth.verify_id_token(token, check_revoked=False)
-    except fb_auth.RevokedIdTokenError:
-        raise HTTPException(status_code=401, detail="Token revocato")
-    except fb_auth.ExpiredIdTokenError:
-        raise HTTPException(status_code=401, detail="Token scaduto")
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Token non valido: {e}")
-
-    doc = await _get_or_create_user(decoded)
+        raise HTTPException(status_code=401, detail="Missing device id")
+    device_id = authorization.split(" ", 1)[1].strip()
+    if not _DEVICE_ID_RE.match(device_id):
+        raise HTTPException(status_code=401, detail="Device id non valido")
+    doc = await _get_or_create_user(device_id)
     return _user_from_doc(doc)
 
 
@@ -217,7 +177,8 @@ async def auth_update_me(payload: ProfileUpdate, user: User = Depends(get_curren
         await db.users.update_one({"user_id": user.user_id}, {"$set": updates})
     fresh = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
     complete = (
-        bool(fresh.get("gender"))
+        bool(fresh.get("name"))
+        and bool(fresh.get("gender"))
         and fresh.get("age") is not None
         and bool(fresh.get("picture"))
     )
@@ -226,6 +187,24 @@ async def auth_update_me(payload: ProfileUpdate, user: User = Depends(get_curren
             {"user_id": user.user_id}, {"$set": {"profile_complete": complete}}
         )
         fresh["profile_complete"] = complete
+    # Also propagate name/picture to existing groups/messages authored by user
+    if "name" in updates or "picture" in updates:
+        new_name = fresh.get("name") or ""
+        new_pic = fresh.get("picture")
+        await db.groups.update_many(
+            {"owner_id": user.user_id},
+            {"$set": {"owner_name": new_name, "owner_picture": new_pic}},
+        )
+        await db.groups.update_many(
+            {"participants.user_id": user.user_id},
+            {
+                "$set": {
+                    "participants.$[p].name": new_name,
+                    "participants.$[p].picture": new_pic,
+                }
+            },
+            array_filters=[{"p.user_id": user.user_id}],
+        )
     return _user_from_doc(fresh)
 
 
@@ -238,6 +217,8 @@ def _group_doc_to_model(d: dict) -> Group:
 
 @api_router.post("/groups", response_model=Group)
 async def create_group(payload: GroupCreate, user: User = Depends(get_current_user)):
+    if not user.name:
+        raise HTTPException(status_code=400, detail="Completa il profilo (nome) prima di creare un gruppo")
     if payload.max_participants < payload.min_participants:
         raise HTTPException(status_code=400, detail="max_participants < min_participants")
     if payload.max_age < payload.min_age:
@@ -308,6 +289,8 @@ async def get_group(group_id: str):
 
 @api_router.post("/groups/{group_id}/join", response_model=Group)
 async def join_group(group_id: str, user: User = Depends(get_current_user)):
+    if not user.name:
+        raise HTTPException(status_code=400, detail="Completa il profilo (nome) prima di unirti")
     g = await db.groups.find_one({"group_id": group_id}, {"_id": 0})
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -368,6 +351,8 @@ async def get_messages(group_id: str, user: User = Depends(get_current_user)):
 
 @api_router.post("/groups/{group_id}/messages", response_model=Message)
 async def post_message(group_id: str, payload: MessageCreate, user: User = Depends(get_current_user)):
+    if not user.name:
+        raise HTTPException(status_code=400, detail="Completa il profilo (nome) prima di scrivere")
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Messaggio vuoto")
@@ -419,10 +404,14 @@ logger = logging.getLogger(__name__)
 async def on_startup():
     try:
         await db.users.create_index("user_id", unique=True)
-        await db.users.create_index("email")
         await db.groups.create_index("group_id", unique=True)
         await db.groups.create_index("category")
         await db.messages.create_index("group_id")
+        # Drop any legacy Firebase indexes if they exist
+        try:
+            await db.users.drop_index("email_1")
+        except Exception:
+            pass
     except Exception as e:
         logger.warning(f"index creation issue: {e}")
 

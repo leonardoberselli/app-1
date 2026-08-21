@@ -21,7 +21,7 @@ import { formatDate } from "@/src/lib/date";
 type Tab = "created" | "joined";
 
 export default function ProfileScreen() {
-  const { user, fbUser, signOut } = useAuth();
+  const { user, deviceId, signOut } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("created");
   const [created, setCreated] = useState<ApiGroup[]>([]);
@@ -30,7 +30,7 @@ export default function ProfileScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    if (!fbUser) return;
+    if (!deviceId) return;
     try {
       const data = await api.myGroups();
       setCreated(data.created);
@@ -41,7 +41,7 @@ export default function ProfileScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [fbUser]);
+  }, [deviceId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -101,8 +101,12 @@ export default function ProfileScreen() {
               </Text>
             </View>
           )}
-          <Text style={styles.name}>{user?.name}</Text>
-          <Text style={styles.email}>{user?.email}</Text>
+          <Text style={styles.name}>{user?.name || "Anonimo"}</Text>
+          {user?.user_id ? (
+            <Text style={styles.email} numberOfLines={1}>
+              ID: {user.user_id.slice(0, 14)}…
+            </Text>
+          ) : null}
 
           <View style={styles.metaRow}>
             {user?.gender && (
@@ -172,16 +176,16 @@ export default function ProfileScreen() {
         )}
 
         <TouchableOpacity
-          testID="logout-button"
+          testID="reset-button"
           activeOpacity={0.85}
           onPress={async () => {
             await signOut();
-            router.replace("/login");
+            router.replace("/");
           }}
           style={styles.logout}
         >
-          <Ionicons name="log-out" size={20} color="#0A0A0A" />
-          <Text style={styles.logoutText}>Esci</Text>
+          <Ionicons name="refresh" size={20} color="#0A0A0A" />
+          <Text style={styles.logoutText}>Reimposta account</Text>
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
