@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/src/contexts/auth";
 import { api } from "@/src/lib/api";
 import { CATEGORIES } from "@/src/lib/categories";
+import { moderateFields } from "@/src/lib/moderation";
 
 const HOURS = [
   "08:00", "09:00", "10:00", "11:00", "12:00", "13:00",
@@ -87,7 +88,7 @@ export default function CreateScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isCustom = categoryId === "custom";
+  const isAltro = categoryId === "altro";
   const selectedCat = CATEGORIES.find((c) => c.id === categoryId);
 
   const reset = () => {
@@ -110,7 +111,15 @@ export default function CreateScreen() {
     setError(null);
     if (!title.trim()) return setError("Inserisci un titolo");
     if (!categoryId) return setError("Seleziona una categoria");
-    if (isCustom && !customCategory.trim()) return setError("Inserisci la categoria custom");
+    if (isAltro && !customCategory.trim()) return setError("Descrivi il tipo di gruppo");
+    // Content moderation: block illegal / offensive content in any free text
+    const modErr = moderateFields({
+      title,
+      description,
+      customCategory: isAltro ? customCategory : "",
+      location,
+    });
+    if (modErr) return setError(modErr);
     if (dateError) return setError("Correggi la data prima di continuare");
     if (!location.trim()) return setError("Inserisci un luogo");
     const minP = parseInt(minPart, 10);
@@ -125,8 +134,8 @@ export default function CreateScreen() {
 
     try {
       setSubmitting(true);
-      const cat = isCustom ? "custom" : categoryId;
-      const catLabel = isCustom ? customCategory.trim() : (selectedCat?.label || "");
+      const cat = categoryId;
+      const catLabel = isAltro ? customCategory.trim() : (selectedCat?.label || "");
       const group = await api.createGroup({
         title: title.trim(),
         category: cat,
@@ -197,27 +206,15 @@ export default function CreateScreen() {
               </TouchableOpacity>
             );
           })}
-          <TouchableOpacity
-            testID="category-custom"
-            activeOpacity={0.85}
-            onPress={() => setCategoryId("custom")}
-            style={[
-              styles.catChip,
-              isCustom && { backgroundColor: "#FF4747", borderColor: "#000" },
-            ]}
-          >
-            <Text style={styles.catEmoji}>✨</Text>
-            <Text style={[styles.catText, isCustom && styles.catTextActive]}>Custom</Text>
-          </TouchableOpacity>
         </ScrollView>
 
-        {isCustom && (
+        {isAltro && (
           <TextInput
             testID="custom-category-input"
             style={[styles.input, { marginTop: 8 }]}
             value={customCategory}
             onChangeText={setCustomCategory}
-            placeholder="Es. Scacchi, Boardgame…"
+            placeholder="Es. Scacchi, Boardgame, Yoga…"
             placeholderTextColor="#9A9A9A"
             maxLength={30}
           />

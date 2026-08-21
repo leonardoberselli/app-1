@@ -1,0 +1,52 @@
+{
+  "summary": "Both backend and frontend moderation + 'Custom' chip removal verified. Added 23 new pytest cases (14 parameterized title cases + description/location/category_label + 4 chat-message cases + 2 accept-clean sanity checks). All 23 pass. Full suite: 68 passed / 3 failed. The 3 failures are pre-existing timing/throttle flakiness in TestExpiredGroupPurge (test_expired_group_purged_on_list_and_messages_cascade, test_expired_group_purged_on_get_detail_returns_404, test_expired_group_purged_on_mine): when the class fixture restarts the backend, the startup force-purge sets _last_purge_at, and the 32s wait in the fixture is not always enough to age out the throttle under load; the class run alone passes 8/9. This is the exact issue already documented as a MINOR item in iteration_7.json and is unrelated to this iteration's changes. Frontend: Crea screen no longer renders 'Custom' chip (category-custom not in DOM), 'Altro' chip is present and tapping it reveals custom-category-input with placeholder 'Es. Scacchi, Boardgame, Yoga…'. Moderation is enforced client-side BEFORE any API call: forbidden title (dr0ga) and forbidden custom category (orgia) both display exactly 'Contenuto non consentito: sono vietati riferimenti a droga, armi, violenza o contenuti illegali.' via [data-testid=create-error]. Clean submit creates the group and navigates to /group/{id}, and the custom label 'yoga rilassante' is displayed as the category on the detail screen. Backend defense-in-depth confirmed via curl-style pytest for title/description/location/category_label and chat messages (leetspeak, spaced, repeated, accented, English variants), all return HTTP 400 with the exact Italian detail.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "TestExpiredGroupPurge (pre-existing, not caused by this iteration)",
+        "issue": "3 tests fail intermittently when the full suite runs back-to-back due to the 30s _last_purge_at throttle set by the startup bg force-purge. Same issue was documented in iteration_7. Fix suggestion: in _purge_expired_groups, do NOT update _last_purge_at when force=True (that way the bg loop doesn't block in-request purges). Or, at boot, don't call the force purge for the first 30s."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "shadow* style props",
+        "issue": "Console warns 'shadow* style props are deprecated. Use boxShadow'. Occurs on the create/onboarding screens (e.g., cta shadow* in /app/frontend/app/(tabs)/create.tsx around line 521 and likely other screens). Not a blocker but should migrate to `boxShadow` on web / preserve `shadow*` under Platform.OS !== 'web'."
+      },
+      {
+        "component": "props.pointerEvents",
+        "issue": "Console warns 'props.pointerEvents is deprecated. Use style.pointerEvents'. Likely coming from a third-party (SafeAreaView / KeyboardAwareScrollView) — safe to ignore, but flag."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: fix pre-existing throttling flakiness in TestExpiredGroupPurge (see minor issue above).",
+    "OPTIONAL: migrate deprecated shadow* style props to boxShadow (web) — cosmetic dev-console noise only."
+  ],
+  "critical_code_review_comments": [
+    "moderation.ts vs server.py: block lists are duplicated between /app/frontend/src/lib/moderation.ts and /app/backend/server.py::_BLOCKED_WORDS. Both stayed in sync in this iteration but there is no shared source of truth — future word additions must be applied twice. Consider deriving the FE list from a small JSON shared between projects.",
+    "server.py::_normalize_text uses `[^a-z\\s]` to strip non-letters. That means digits become spaces AFTER leet mapping — good — but Unicode letters outside a-z (e.g., Cyrillic look-alikes 'р','о','г','а') are also stripped, so a determined attacker can bypass with homoglyphs. Same limitation exists in the FE. Acceptable for MVP.",
+    "CATEGORIES.altro id is 'altro' but the CUSTOM_CATEGORY constant is still exported from /app/frontend/src/lib/categories.ts even though the chip was removed. Dead export — safe to delete."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added TestModerationGroups, TestModerationMessages, owner_named fixture; +23 tests)"
+  ],
+  "success_rate": {
+    "backend": "68/71 total (23/23 new moderation tests, 45/48 pre-existing; 3 flaky expired-purge tests preexisting)",
+    "frontend": "100% for this iteration's scope (Custom chip removed, Altro-text flow, inline moderation error, clean create + navigation)"
+  },
+  "seed_data_creation": "None. Test data is prefixed TEST_ and cleaned in session teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend tests live in /app/backend/tests/backend_test.py — one file, class-based, session-scoped owner fixture. Moderation classes require the module-scoped owner_named fixture which PATCHes /api/auth/me to give the owner a name; do not remove it. When running the full suite, be aware TestExpiredGroupPurge is flaky due to a 30s throttle interaction with the startup bg purge (documented above); run that class in isolation to observe expected passes.",
+  "rca_of_issue": "N/A — no bug found in this iteration's changes. Moderation module works front-to-back for all requested variants (leetspeak d/0/1/3/4/5/7/@/$/!, accents è/é/à/ì/ò/ù, tripled letters collapsed to double, spaced-out via compact form, and Italian+English blocklists). The 3 failing expired-purge tests are pre-existing timing flakiness unrelated to moderation."
+}

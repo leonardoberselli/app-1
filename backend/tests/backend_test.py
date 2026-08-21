@@ -576,3 +576,130 @@ class TestExpiredGroupPurge:
         payload["time"] = "10:00"
         r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
         assert r.status_code == 400
+
+
+# ======================================================= Content Moderation
+# Verify POST /api/groups and POST /api/groups/{id}/messages reject forbidden
+# content (droga, armi, orgy, etc.) even when obfuscated (leetspeak, spacing,
+# accents, repeated letters, English variants). Response must be 400 with
+# the exact Italian detail message.
+
+FORBIDDEN_DETAIL = (
+    "Contenuto non consentito: sono vietati riferimenti a "
+    "droga, armi, violenza o contenuti illegali."
+)
+
+
+@pytest.fixture(scope="module", autouse=False)
+def owner_named(api, owner_headers):
+    """Ensure owner device has a name set (moderation tests may run in isolation)."""
+    api.patch(f"{BASE_URL}/api/auth/me",
+              json={"name": "Mod Owner"}, headers=owner_headers)
+    return True
+
+
+@pytest.mark.usefixtures("owner_named")
+class TestModerationGroups:
+    """POST /api/groups content moderation on title/description/location/category_label."""
+
+    @pytest.mark.parametrize("bad", [
+        "droga",                # straight
+        "dr0ga",                # leetspeak zero
+        "d r o g a",            # spaced
+        "drogaaaa",             # repeated letters
+        "c0caina",              # leet cocaina
+        "cocaine party",        # english
+        "drugs galore",         # english plural
+        "v3ndere armi",         # leet + italian armi
+        "arm1",                 # leet armi
+        "orgia in casa",        # italian orgia
+        "orgy tonight",         # english orgy
+        "guns for sale",        # english guns
+        "kalashnikov",          # weapons list
+        "più droga",            # accented
+    ])
+    def test_reject_forbidden_title(self, api, owner_headers, bad):
+        payload = _group_payload(title=f"TEST_{bad}")
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400, f"expected 400 for title={bad!r}, got {r.status_code}: {r.text}"
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    def test_reject_forbidden_description(self, api, owner_headers):
+        payload = _group_payload(title="TEST_clean_desc_bad")
+        payload["description"] = "vendiamo c0caina al parco"
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    def test_reject_forbidden_location(self, api, owner_headers):
+        payload = _group_payload(title="TEST_clean_loc_bad")
+        payload["location"] = "Piazza della droga"
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    def test_reject_forbidden_category_label(self, api, owner_headers):
+        payload = _group_payload(title="TEST_clean_cat_bad", label="Orgia Party")
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    def test_accept_clean_content(self, api, owner_headers):
+        """Sanity check: perfectly clean groups still create as before."""
+        payload = _group_payload(title="TEST_clean_ok")
+        payload["description"] = "Bella partita al parco, portate acqua"
+        payload["location"] = "Parco Sempione, Milano"
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["title"] == "TEST_clean_ok"
+        assert body["description"] == "Bella partita al parco, portate acqua"
+
+    def test_accept_similar_but_clean(self, api, owner_headers):
+        """Should NOT false-positive on ordinary italian words."""
+        payload = _group_payload(title="TEST_erbolino corsa")
+        # 'corsa', 'gara', 'weekend' are clean; keep test titles unique
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 200, r.text
+
+
+@pytest.mark.usefixtures("owner_named")
+class TestModerationMessages:
+    """POST /api/groups/{id}/messages content moderation."""
+
+    def test_reject_forbidden_message(self, api, owner_headers):
+        r = api.post(f"{BASE_URL}/api/groups",
+                     json=_group_payload(title="TEST_mod_chat"), headers=owner_headers)
+        assert r.status_code == 200, r.text
+        gid = r.json()["group_id"]
+        r = api.post(f"{BASE_URL}/api/groups/{gid}/messages",
+                     json={"text": "vendo dr0ga a tutti"}, headers=owner_headers)
+        assert r.status_code == 400
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    def test_reject_spaced_forbidden_message(self, api, owner_headers):
+        r = api.post(f"{BASE_URL}/api/groups",
+                     json=_group_payload(title="TEST_mod_chat_spaced"), headers=owner_headers)
+        gid = r.json()["group_id"]
+        r = api.post(f"{BASE_URL}/api/groups/{gid}/messages",
+                     json={"text": "d r o g a subito"}, headers=owner_headers)
+        assert r.status_code == 400
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    def test_reject_english_forbidden_message(self, api, owner_headers):
+        r = api.post(f"{BASE_URL}/api/groups",
+                     json=_group_payload(title="TEST_mod_chat_en"), headers=owner_headers)
+        gid = r.json()["group_id"]
+        r = api.post(f"{BASE_URL}/api/groups/{gid}/messages",
+                     json={"text": "buying guns tonight"}, headers=owner_headers)
+        assert r.status_code == 400
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    def test_accept_clean_message(self, api, owner_headers):
+        r = api.post(f"{BASE_URL}/api/groups",
+                     json=_group_payload(title="TEST_mod_chat_ok"), headers=owner_headers)
+        gid = r.json()["group_id"]
+        r = api.post(f"{BASE_URL}/api/groups/{gid}/messages",
+                     json={"text": "TEST_ci vediamo al parco alle 18"}, headers=owner_headers)
+        assert r.status_code == 200
+        assert r.json()["text"] == "TEST_ci vediamo al parco alle 18"

@@ -161,6 +161,78 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     return _user_from_doc(doc)
 
 
+# ============================== Content moderation ==============================
+
+_LEET_MAP = str.maketrans({
+    "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t",
+    "@": "a", "$": "s", "!": "i",
+    "\u00e8": "e", "\u00e9": "e", "\u00e0": "a",
+    "\u00ec": "i", "\u00f2": "o", "\u00f9": "u",
+})
+
+# Kept in sync with /app/frontend/src/lib/moderation.ts
+_BLOCKED_WORDS: List[str] = [
+    # Droga
+    "droga", "drug", "drugs",
+    "cocaina", "cocaine", "coca",
+    "eroina", "heroin",
+    "crack",
+    "cannabis", "marijuana", "weed", "erba", "ganja", "hashish", "hash",
+    "metanfetamina", "meth",
+    "ecstasy", "mdma", "lsd", "ketamina",
+    "spaccio", "spacciare", "pusher",
+    # Armi / violenza
+    "armi", "pistola", "pistole", "fucile", "fucili", "kalashnikov",
+    "weapon", "weapons", "gun", "guns", "rifle",
+    "esplosivo", "esplosivi", "bomba", "bombe", "bomb",
+    "terrorismo", "terrorist", "attentato",
+    "uccidere", "ammazzare", "omicidio", "kill", "murder", "hitman",
+    "stupro", "stuprare", "rape",
+    # Sesso illegale / non consensuale
+    "orgia", "orgie", "orgy", "orgies",
+    "pedofilo", "pedofilia", "pedophile", "pedophilia", "minorenni",
+    "prostituzione", "prostituta", "prostitute", "escort", "puttana",
+    "zoofilia",
+    # Odio / auto-lesionismo
+    "nazismo", "nazista", "nazi",
+    "suicidio", "suicide", "ammazzarsi", "autolesionismo",
+]
+
+_REPEAT_RE = re.compile(r"(.)\1{2,}")
+_NON_ALPHA_RE = re.compile(r"[^a-z\s]")
+_WS_RE = re.compile(r"\s+")
+
+
+def _normalize_text(text: str) -> str:
+    s = text.lower().translate(_LEET_MAP)
+    s = _REPEAT_RE.sub(r"\1\1", s)
+    s = _NON_ALPHA_RE.sub(" ", s)
+    compact = _WS_RE.sub("", s)
+    return f"{s} {compact}"
+
+
+def _first_forbidden(text: str) -> Optional[str]:
+    if not text:
+        return None
+    n = _normalize_text(text)
+    for w in _BLOCKED_WORDS:
+        if w in n:
+            return w
+    return None
+
+
+def _reject_if_forbidden(*fields: str) -> None:
+    for f in fields:
+        if _first_forbidden(f):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Contenuto non consentito: sono vietati riferimenti a "
+                    "droga, armi, violenza o contenuti illegali."
+                ),
+            )
+
+
 # ============================== Expired-group cleanup ==============================
 
 # Groups auto-delete when their event start time is more than
@@ -290,6 +362,13 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
         raise HTTPException(status_code=400, detail="max_participants < min_participants")
     if payload.max_age < payload.min_age:
         raise HTTPException(status_code=400, detail="max_age < min_age")
+    # Content moderation on every free-text field
+    _reject_if_forbidden(
+        payload.title,
+        payload.description or "",
+        payload.location,
+        payload.category_label,
+    )
     # Reject events that are already expired (past date + buffer) at creation
     event_dt = _event_datetime(payload.date, payload.time)
     if event_dt is None:
@@ -433,6 +512,7 @@ async def post_message(group_id: str, payload: MessageCreate, user: User = Depen
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Messaggio vuoto")
+    _reject_if_forbidden(text)
     g = await db.groups.find_one({"group_id": group_id}, {"_id": 0})
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
