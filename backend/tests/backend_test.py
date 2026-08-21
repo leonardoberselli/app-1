@@ -586,7 +586,8 @@ class TestExpiredGroupPurge:
 
 FORBIDDEN_DETAIL = (
     "Contenuto non consentito: sono vietati riferimenti a "
-    "droga, armi, violenza o contenuti illegali."
+    "droga, armi, violenza, sesso esplicito, alcol o "
+    "contenuti illegali."
 )
 
 
@@ -863,3 +864,138 @@ class TestPublicUserProfile:
 
 def _extract_owner_from(headers: dict) -> str:
     return headers["Authorization"].split(" ", 1)[1]
+
+
+# ======================================================= Iteration 10: Stem-based moderation
+# Verify the new stem-based moderation catches leetspeak/repeats/accents/spacing
+# variants requested by the user in this iteration, blocks the newly added
+# terms (sesso, porno, alcol, ubriac, stupefac, attentat, uccider, ammazz,
+# omicid), and does NOT false-positive on ordinary Italian words that just
+# happen to contain a stem in the middle (carbonara, ceramica, sessione,
+# metodo, cocacola, hashtag, carmine, gatto, erba).
+
+@pytest.mark.usefixtures("owner_named")
+class TestModerationStemsIteration10:
+    """Iteration 10: stem-based obfuscation catches + newly added terms + FP-free."""
+
+    # ---- TRUE-POSITIVE: exact user-facing example + leet/repeat variants ----
+    @pytest.mark.parametrize("bad", [
+        "Vendo Drog3",         # user's original example (leet 3->e)
+        "Drog4",               # leet 4->a
+        "dr0ga",               # leet 0->o
+        "drogaaa",             # repeated tail
+        "v3nd3re Arm1",        # leet armi
+        "Vendita p1st0le",     # leet pistole -> pistol stem
+        "Vendo sesso",         # new term sesso
+        "porno party",         # new term porno
+        "orgia in casa",       # orgia stem
+        "bevi alcol tutti",    # new term alcol
+        "vieni per l alcool",  # alcool variant
+        "alcohol night",       # english alcohol
+        "vado a ubriacarmi",   # ubriac stem
+        "cerco stupefacenti",  # stupefac stem
+        "organizziamo attentato",  # attentat stem
+        "voglio ucciderlo",    # uccider stem
+        "ammazziamoci",        # ammazz stem
+        "compiere omicidio",   # omicid stem
+    ])
+    def test_reject_title_iteration10(self, api, owner_headers, bad):
+        payload = _group_payload(title=f"TEST_{bad}")
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400, f"expected 400 for title={bad!r}, got {r.status_code}: {r.text}"
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    @pytest.mark.parametrize("bad", [
+        "Vendo Drog3 al parco",
+        "consegna dr0ga stasera",
+        "portiamo sesso qui",
+        "beviamo alcool",
+        "andiamo a ubriacarci",
+    ])
+    def test_reject_description_iteration10(self, api, owner_headers, bad):
+        payload = _group_payload(title=f"TEST_desc_ok_{uuid.uuid4().hex[:6]}")
+        payload["description"] = bad
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400, f"expected 400 for desc={bad!r}"
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    @pytest.mark.parametrize("bad", [
+        "Via della Drog4",
+        "Piazza attentato",
+        "Parco Sesso 5",
+    ])
+    def test_reject_location_iteration10(self, api, owner_headers, bad):
+        payload = _group_payload(title=f"TEST_loc_ok_{uuid.uuid4().hex[:6]}")
+        payload["location"] = bad
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400, f"expected 400 for location={bad!r}"
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    @pytest.mark.parametrize("bad", [
+        "Drog3 party",
+        "Sesso club",
+        "Alcool social",
+    ])
+    def test_reject_category_label_iteration10(self, api, owner_headers, bad):
+        payload = _group_payload(title=f"TEST_cat_ok_{uuid.uuid4().hex[:6]}", label=bad)
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400, f"expected 400 for label={bad!r}"
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    @pytest.mark.parametrize("bad", [
+        "vendo Drog3 a tutti",
+        "porto sesso stasera",
+        "beviamo alcool insieme",
+        "andiamo a ubriacarci",
+        "sto per ucciderlo",
+    ])
+    def test_reject_chat_message_iteration10(self, api, owner_headers, bad):
+        # Create a clean group first
+        r = api.post(f"{BASE_URL}/api/groups",
+                     json=_group_payload(title=f"TEST_chat_it10_{uuid.uuid4().hex[:6]}"),
+                     headers=owner_headers)
+        assert r.status_code == 200, r.text
+        gid = r.json()["group_id"]
+        r = api.post(f"{BASE_URL}/api/groups/{gid}/messages",
+                     json={"text": bad}, headers=owner_headers)
+        assert r.status_code == 400, f"expected 400 for msg={bad!r}: {r.text}"
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    # ---- TRUE-NEGATIVE: clean words that must NOT be flagged ----
+    @pytest.mark.parametrize("clean_title", [
+        "TEST_Cena carbonara",              # 'arma' should NOT match 'carbonara'
+        "TEST_Corso di ceramica",           # inner 'armi' in 'ceramica' -> stem 'arma' word-boundary ok
+        "TEST_Sessione di studio",          # 'sesso' stem must not match 'sessione'
+        "TEST_Metodo di studio",            # 'meth' — no 'meth' stem, only 'methamph'
+        "TEST_Cocacola party",              # 'cocain' stem word-boundary must not match 'cocacola'
+        "TEST_Hashtag social",              # 'hashish' stem must not match 'hashtag'
+        "TEST_Carmine e i suoi amici",      # 'armi' stem must not match 'carmine' (word-boundary)
+        "TEST_Il gatto sul tetto",          # totally clean
+        "TEST_Un po d erba nel parco",      # 'erba' has NO stem (kept lenient per spec)
+    ])
+    def test_accept_false_positive_free(self, api, owner_headers, clean_title):
+        payload = _group_payload(title=clean_title)
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 200, f"false-positive on {clean_title!r}: {r.text}"
+        body = r.json()
+        assert body["title"] == clean_title
+
+    def test_accept_clean_description_with_similar_words(self, api, owner_headers):
+        payload = _group_payload(title=f"TEST_clean_desc_it10_{uuid.uuid4().hex[:6]}")
+        payload["description"] = (
+            "Sessione di ceramica: portate il carbonaio e un panino di carbonara. "
+            "Hashtag ufficiale #cocacolaparty — verrà anche Carmine."
+        )
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 200, r.text
+
+    def test_forbidden_detail_message_exact(self, api, owner_headers):
+        """Guard: the detail message wording must match exactly (client mirrors it)."""
+        payload = _group_payload(title="TEST_Vendo Drog3")
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400
+        assert r.json()["detail"] == (
+            "Contenuto non consentito: sono vietati riferimenti a "
+            "droga, armi, violenza, sesso esplicito, alcol o "
+            "contenuti illegali."
+        )

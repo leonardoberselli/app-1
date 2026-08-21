@@ -171,6 +171,12 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
 
 
 # ============================== Content moderation ==============================
+#
+# Strategy: normalize obfuscations (leetspeak, spacing, repetitions) then
+# match against BLOCKED STEMS (short prefixes) using a word-boundary rule
+# at the STEM start. This catches "drog3", "drog4", "drogaaa", "d r o g a"
+# without false-positive on unrelated words that just contain the stem in
+# the middle (e.g. "carmine" is not flagged for "armi").
 
 _LEET_MAP = str.maketrans({
     "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t",
@@ -180,54 +186,60 @@ _LEET_MAP = str.maketrans({
 })
 
 # Kept in sync with /app/frontend/src/lib/moderation.ts
-_BLOCKED_WORDS: List[str] = [
+_BLOCKED_STEMS: List[str] = [
     # Droga
-    "droga", "drug", "drugs",
-    "cocaina", "cocaine", "coca",
-    "eroina", "heroin",
-    "crack",
-    "cannabis", "marijuana", "weed", "erba", "ganja", "hashish", "hash",
-    "metanfetamina", "meth",
-    "ecstasy", "mdma", "lsd", "ketamina",
-    "spaccio", "spacciare", "pusher",
+    "drog", "drug", "cocain", "eroin", "cannab", "marij", "weed", "ganja",
+    "hashish", "metanfet", "methamph", "ecstasy", "mdma", "lsd", "ketam",
+    "spacci", "pusher", "stupefac",
     # Armi / violenza
-    "armi", "pistola", "pistole", "fucile", "fucili", "kalashnikov",
-    "weapon", "weapons", "gun", "guns", "rifle",
-    "esplosivo", "esplosivi", "bomba", "bombe", "bomb",
-    "terrorismo", "terrorist", "attentato",
-    "uccidere", "ammazzare", "omicidio", "kill", "murder", "hitman",
-    "stupro", "stuprare", "rape",
-    # Sesso illegale / non consensuale
-    "orgia", "orgie", "orgy", "orgies",
-    "pedofilo", "pedofilia", "pedophile", "pedophilia", "minorenni",
-    "prostituzione", "prostituta", "prostitute", "escort", "puttana",
-    "zoofilia",
+    "arma", "armi", "pistol", "fucil", "kalash",
+    "weapon", "guns", "rifle", "knife",
+    "esplos", "bomb", "terror", "attentat",
+    "uccider", "ammazz", "omicid", "hitman", "murder",
+    "stupr", "rape",
+    # Sesso illegale / esplicito
+    "orgia", "orgie", "orgy", "pedofil", "pedoph", "minoren",
+    "prostit", "escort", "puttana", "zoofil",
+    "sesso", "porno",
+    # Alcol
+    "alcol", "alcool", "alcohol", "ubriac",
     # Odio / auto-lesionismo
-    "nazismo", "nazista", "nazi",
-    "suicidio", "suicide", "ammazzarsi", "autolesionismo",
+    "nazism", "nazist", "razzism", "razzist",
+    "suicid", "autolesion",
 ]
 
 _REPEAT_RE = re.compile(r"(.)\1{2,}")
 _NON_ALPHA_RE = re.compile(r"[^a-z\s]")
 _WS_RE = re.compile(r"\s+")
+_SINGLE_RUN_RE = re.compile(r"(?:^|\s)((?:[a-z]\s+){2,}[a-z])(?=\s|$)")
+# Pre-compile one regex that matches any of the stems at a word boundary.
+_STEMS_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(s) for s in _BLOCKED_STEMS) + r")",
+    re.IGNORECASE,
+)
 
 
 def _normalize_text(text: str) -> str:
     s = text.lower().translate(_LEET_MAP)
     s = _REPEAT_RE.sub(r"\1\1", s)
     s = _NON_ALPHA_RE.sub(" ", s)
-    compact = _WS_RE.sub("", s)
-    return f"{s} {compact}"
+    s = _WS_RE.sub(" ", s).strip()
+
+    # Glue runs of 2+ single-letter tokens: "d r o g a" -> "droga".
+    # Loop until stable; the string strictly shrinks so this terminates.
+    prev = None
+    while prev != s:
+        prev = s
+        s = _SINGLE_RUN_RE.sub(lambda m: " " + m.group().replace(" ", "") + " ", s)
+        s = _WS_RE.sub(" ", s).strip()
+    return s
 
 
 def _first_forbidden(text: str) -> Optional[str]:
     if not text:
         return None
-    n = _normalize_text(text)
-    for w in _BLOCKED_WORDS:
-        if w in n:
-            return w
-    return None
+    m = _STEMS_RE.search(_normalize_text(text))
+    return m.group(0) if m else None
 
 
 def _reject_if_forbidden(*fields: str) -> None:
@@ -237,7 +249,8 @@ def _reject_if_forbidden(*fields: str) -> None:
                 status_code=400,
                 detail=(
                     "Contenuto non consentito: sono vietati riferimenti a "
-                    "droga, armi, violenza o contenuti illegali."
+                    "droga, armi, violenza, sesso esplicito, alcol o "
+                    "contenuti illegali."
                 ),
             )
 

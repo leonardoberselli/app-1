@@ -1,0 +1,65 @@
+{
+  "summary": "Iteration 10 — stem-based content moderation verified end-to-end. BACKEND: extended /app/backend/tests/backend_test.py with TestModerationStemsIteration10 (43 new parametrized cases). All 43 new cases PASS: TRUE-positive coverage — 'Vendo Drog3' (user's original example), 'Drog4', 'dr0ga', 'drogaaa', 'v3nd3re Arm1', 'Vendita p1st0le', plus new iteration terms sesso/porno/orgia/alcol/alcool/alcohol/ubriac/stupefac/attentat/uccider/ammazz/omicid across title, description, location, category_label AND chat POST /api/groups/{id}/messages; TRUE-negative coverage — 'Cena carbonara', 'Corso di ceramica', 'Sessione di studio', 'Metodo di studio', 'Cocacola party', 'Hashtag social', 'Carmine e i suoi amici', 'Il gatto sul tetto', 'Un po d erba nel parco' are ALL accepted (200) — stem word-boundary correctly avoids false positives on inner substrings. Detail message wording exact-matches 'Contenuto non consentito: sono vietati riferimenti a droga, armi, violenza, sesso esplicito, alcol o contenuti illegali.'. Updated the FORBIDDEN_DETAIL constant in TestModerationGroups/TestModerationMessages to the new wording (was still on the old iteration 8/9 wording without 'sesso esplicito, alcol' — those pre-existing tests would otherwise have broken). FRONTEND (Expo web, viewport 390x844, /create tab): seeded a device via PATCH /api/auth/me + localStorage @groupup/device_id, filled title 'Vendo Drog3' + category 'basket' + location 'Parco' + tapped [data-testid=create-submit] — the inline [data-testid=create-error] appeared with the EXACT expected Italian message BEFORE any network call (client-side moderation via /app/frontend/src/lib/moderation.ts). Then re-tested with clean title 'Cena carbonara' — no moderation error, the group was actually created and the app navigated to /group/{id} (visual confirmation via screenshot). Both required user-facing behaviors verified. Backend full regression: 115/118 pass (9 TestExpiredGroupPurge pre-existing flaky tests deselected). The 3 failures are NOT introduced by this iteration and are documented in Issues: (a) English plural 'drugs galore' is not blocked because there is no 'drug' stem (only Italian 'drog'); the previous exact-word moderation covered it — this is a MODERATION GAP; (b, c) two TestPublicUserProfile tests expected 404 for non-existent target but now correctly get 403 (privacy nit from iteration_9 was applied to server.py) — the tests are stale, not the code.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/groups (moderation)",
+        "issue": "MODERATION GAP: English plural 'drugs' (and 'drug') is NOT blocked. Stem list contains only Italian 'drog' — since 'drug' != 'drog' in the first 4 chars, 'drugs galore' passes moderation. Previously blocked by exact-word list. Consider adding stem 'drug' to _BLOCKED_STEMS in both /app/backend/server.py and /app/frontend/src/lib/moderation.ts. Not in the explicit iteration-10 scope but a real regression."
+      },
+      {
+        "endpoint": "GET /api/users/{target_id} (test staleness, NOT a code bug)",
+        "issue": "TestPublicUserProfile::test_nonexistent_target_404 and ::test_endpoint_auto_creates_caller_not_target expect 404 but server correctly returns 403 to prevent device-id enumeration (privacy nit from iteration_9 was applied to server.py lines 388-391). Tests need updating to expect 403 in the 'not found + not shared' branch. Code is CORRECT; tests are stale."
+      },
+      {
+        "endpoint": "TestExpiredGroupPurge (pre-existing, deselected)",
+        "issue": "9 tests still fail intermittently due to 30s _last_purge_at throttle + startup bg force-purge interaction (documented since iteration_7). Unchanged."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "shadow* style props",
+        "issue": "Console warns 'shadow* style props are deprecated. Use boxShadow.' Present on multiple screens (create.tsx CTA button uses shadowColor/shadowOffset/shadowOpacity/shadowRadius at line 521-524). Cosmetic dev warning only on web; safe on native. Migrate to boxShadow for web via Platform.OS check."
+      },
+      {
+        "component": "props.pointerEvents",
+        "issue": "Console warns 'props.pointerEvents is deprecated. Use style.pointerEvents'. Third-party origin (SafeAreaView/keyboard-controller). Documented since iteration_8."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL/RECOMMENDED: add stem 'drug' to both _BLOCKED_STEMS lists (backend server.py line 189-209 and frontend moderation.ts line 22-42) so English 'drug'/'drugs' are also blocked. Currently only Italian 'drog' is a stem and does not match 'drug'.",
+    "LOW: update TestPublicUserProfile::test_nonexistent_target_404 and ::test_endpoint_auto_creates_caller_not_target to expect 403 (server correctly enforces privacy — no code change needed).",
+    "OPTIONAL (pre-existing): migrate shadow* -> boxShadow on web to silence deprecation console noise (also flagged in iteration_9)."
+  ],
+  "critical_code_review_comments": [
+    "server.py::_normalize_text is well-defined: leet map → collapse 3+ repeats → strip non-alpha → glue single-letter runs. Terminates because the string strictly shrinks (comment matches behavior).",
+    "server.py::_STEMS_RE uses \\b at the START of each stem only — correct choice: it catches obfuscated tails (drog3, drog4, drogaaa) while avoiding mid-word false-positives (carmine ≠ armi, ceramica ≠ armi, sessione ≠ sesso, cocacola ≠ cocain, hashtag ≠ hashish).",
+    "moderation.ts::findForbiddenWord builds a fresh RegExp inside a for-loop per call. Minor perf nit: pre-compile once at module load. Non-blocking.",
+    "moderation.ts and server.py stem lists appear IDENTICAL — this is critical for UX (mirror the server rule client-side). Verified by inspection.",
+    "Backend applies _reject_if_forbidden to title/description/location/category_label in create_group and to text in post_message. Coverage matches the spec.",
+    "MODERATION GAP: English 'drug' is not a stem. Also 'meth' is not (only 'metanfet'/'methamph'). The clean-word test 'Metodo di studio' passes precisely because there is no 'meth' stem; if the user later adds 'meth' as a stem, 'Metodo' would be a NEW false positive.",
+    "server.py detail message correctly matches moderation.ts client message word-for-word — verified by explicit test_forbidden_detail_message_exact."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (updated FORBIDDEN_DETAIL constant to new wording; appended TestModerationStemsIteration10 class with 43 parametrized tests: title, description, location, category_label, chat + false-positive coverage + exact-detail-message guard)"
+  ],
+  "success_rate": {
+    "backend": "115/118 selected pass (97.5%). Moderation-specific: 66/67 pass (98.5%); the one failure is a legitimate moderation gap for English 'drugs' plural. New Iteration 10 tests: 43/43 (100%).",
+    "frontend": "100% for the required scope — 'Vendo Drog3' blocked inline with exact Italian message before network; clean 'Cena carbonara' accepted and group created."
+  },
+  "seed_data_creation": "Test-time only. Reused existing OWNER_/OTHER_/TESTDEV_ device-id fixtures. Session teardown deletes TEST_* groups/messages and test users. Frontend used one TESTDEV_ device seeded via PATCH /api/auth/me + localStorage injection.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration-10 moderation tests live in /app/backend/tests/backend_test.py class TestModerationStemsIteration10 (line ~868). Run standalone: pytest backend/tests/backend_test.py::TestModerationStemsIteration10 -v. If the main agent adds 'drug' or 'meth' stems in a follow-up, add positive tests for those AND re-verify TestModerationStemsIteration10::test_accept_false_positive_free (Metodo di studio would need special handling — probably requires the same word-boundary logic to hold). The three failing tests (drugs galore + 2x public-profile 404→403) are unrelated to iteration 10 scope; the drugs-galore failure is a REAL moderation gap and the 404 ones are stale tests that need updating to 403.",
+  "rca_of_issue": "N/A — no bug in the requested scope. Reproduction of the moderation-gap side-finding: `curl -X POST $BASE/api/groups -H 'Authorization: Bearer <8+chars>' -d '{\"title\":\"drugs galore\", ...}'` returns 200 instead of 400. Root cause: _BLOCKED_STEMS has only Italian 'drog' — 'drug'/'drugs' start with 'drug' which does not have 'drog' as a prefix at a word boundary. Fix: add 'drug' to both stem lists."
+}
