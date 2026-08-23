@@ -35,7 +35,7 @@ export type ApiGroup = {
   category_label: string;
   location: string;
   city?: string | null;
-  street?: string | null;
+  province?: string | null;
   lat?: number | null;
   lon?: number | null;
   description: string;
@@ -50,6 +50,15 @@ export type ApiGroup = {
   owner_picture?: string | null;
   participants: Participant[];
   created_at: string;
+};
+
+export type CitySuggestion = {
+  name: string;
+  province: string;
+  region: string;
+  lat: number;
+  lon: number;
+  display: string;
 };
 
 export type ApiMessage = {
@@ -142,6 +151,12 @@ export const api = {
     const qs = new URLSearchParams({ city });
     if (street) qs.append("street", street);
     return request<{ lat: number; lon: number }>(`/geocode?${qs.toString()}`, {
+      auth: false,
+    });
+  },
+  suggestCities: (q: string, limit: number = 6) => {
+    const qs = new URLSearchParams({ q, limit: String(limit) });
+    return request<CitySuggestion[]>(`/cities/suggest?${qs.toString()}`, {
       auth: false,
     });
   },

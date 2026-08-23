@@ -8,7 +8,6 @@ import {
   Image,
   ActivityIndicator,
   RefreshControl,
-  TextInput,
   Linking,
   Alert,
 } from "react-native";
@@ -19,9 +18,10 @@ import Slider from "@react-native-community/slider";
 
 import { useAuth } from "@/src/contexts/auth";
 import { useLocationPrefs } from "@/src/contexts/location";
-import { api, ApiGroup } from "@/src/lib/api";
+import { api, ApiGroup, CitySuggestion } from "@/src/lib/api";
 import { findCategory, CUSTOM_CATEGORY } from "@/src/lib/categories";
 import { formatDate } from "@/src/lib/date";
+import { CityAutocomplete } from "@/src/components/CityAutocomplete";
 
 type Tab = "created" | "joined";
 
@@ -44,6 +44,7 @@ export default function ProfileScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualCity, setManualCity] = useState(prefs.manualCity);
+  const [manualPick, setManualPick] = useState<CitySuggestion | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
   const [manualError, setManualError] = useState<string | null>(null);
   const [sliderValue, setSliderValue] = useState(prefs.radiusKm);
@@ -205,7 +206,7 @@ export default function ProfileScreen() {
                 <Text style={styles.locationStatusText} numberOfLines={1}>
                   {prefs.source === "gps"
                     ? "GPS attivo"
-                    : `Riferimento: ${prefs.manualCity || "città"}`}
+                    : `Riferimento: ${prefs.manualCity || "città"}${prefs.manualProvince ? ` (${prefs.manualProvince})` : ""}`}
                 </Text>
               </>
             ) : (
@@ -277,14 +278,18 @@ export default function ProfileScreen() {
 
           {manualOpen && (
             <View style={{ gap: 8, marginTop: 12 }}>
-              <TextInput
+              <CityAutocomplete
                 testID="manual-city-input"
-                style={styles.cityInput}
                 value={manualCity}
-                onChangeText={setManualCity}
+                onChangeText={(t) => {
+                  setManualCity(t);
+                  setManualPick(null);
+                }}
+                onSelect={(c) => {
+                  setManualCity(c.name);
+                  setManualPick(c);
+                }}
                 placeholder="Es. Milano"
-                placeholderTextColor="#9A9A9A"
-                autoCapitalize="words"
               />
               {manualError ? (
                 <Text style={styles.error} testID="manual-error">
@@ -299,15 +304,24 @@ export default function ProfileScreen() {
                     setManualError("Inserisci una città");
                     return;
                   }
+                  if (!manualPick) {
+                    setManualError("Seleziona una città dai suggerimenti");
+                    return;
+                  }
                   setManualBusy(true);
                   setManualError(null);
-                  const res = await setManualLocation(manualCity.trim());
+                  const res = await setManualLocation(manualPick.name, {
+                    lat: manualPick.lat,
+                    lon: manualPick.lon,
+                    province: manualPick.province,
+                  });
                   setManualBusy(false);
                   if (!res.ok) {
                     setManualError(res.error || "Città non trovata");
                     return;
                   }
                   setManualOpen(false);
+                  setManualPick(null);
                 }}
                 disabled={manualBusy}
                 style={[styles.locConfirmBtn, manualBusy && { opacity: 0.6 }]}

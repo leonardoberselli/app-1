@@ -249,3 +249,134 @@ agent_communication:
         e) GET /api/groups (senza geo) include tutti (regressione)
         f) GET /api/geocode?city=Milano -> {lat, lon}
         g) GET /api/geocode?city=CittaInesistente -> 404
+
+# ============================== Iteration 12 ==============================
+
+user_problem_statement: |
+  Ulteriori miglioramenti alla feature di posizione:
+  1. Quando si crea un gruppo, mentre si digita il nome della città l'app
+     deve suggerire città reali con la provincia a fianco.
+  2. Una volta creato il gruppo, il titolo/riga di posizione deve mostrare
+     città (e provincia) accanto al luogo.
+  3. RIMUOVERE il campo VIA dal form di creazione.
+
+backend:
+  - task: "Endpoint /api/cities/suggest con autocomplete Photon"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Nuovo endpoint GET /api/cities/suggest?q= che usa Photon (Komoot)
+          OSM autocomplete (supporta prefix search). Filtra countrycode=IT,
+          osm_key=place, osm_value in {city,town,village,hamlet}. Cache
+          in-memory. Verificato via curl: "correg" -> Correggio, "mila"
+          -> Milano+Milazzo+Milanere, "rom" -> Roma+Romano Canavese+...
+  - task: "Rimozione campo street obbligatorio; province+lat+lon dal client"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          POST /api/groups: rimosso `street`, aggiunti `province`, `lat`, `lon`
+          opzionali. Se lat/lon forniti dal client (autocomplete pick), il
+          backend li usa senza rifare geocoding. Altrimenti fallback su
+          `_geocode(city)`. `street` non è più incluso nel modello Group.
+
+frontend:
+  - task: "Componente CityAutocomplete riutilizzabile"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/CityAutocomplete.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Nuovo componente debounced (350ms), sequence-tracking anti-race,
+          dropdown con "Nome" + "Provincia · Regione". Sceglie suggestion
+          -> setta lat/lon per skip-geocode nel backend.
+  - task: "Form Crea Gruppo: rimozione VIA + autocomplete città"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/create.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Rimosso input VIA. CITTÀ ora usa CityAutocomplete. Il payload al
+          create manda city+province+lat+lon dalla selezione. Validazione:
+          si deve SELEZIONARE una città dal menu (non basta digitare).
+          Verificato via UI: Milano selezionata -> gruppo creato con
+          "Bar Rita · Milano (Milano)" nel detail.
+  - task: "Home + Profilo: autocomplete città manuale (fallback GPS negato)"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/index.tsx, /app/frontend/app/(tabs)/profile.tsx, /app/frontend/src/contexts/location.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          LocationProvider.setManualLocation ora accetta coords opzionali
+          {lat, lon, province} dal picker. Il modal della home e la sezione
+          "Città" del profilo usano CityAutocomplete. Nuovo campo
+          `manualProvince` nelle prefs. Banner mostra "Entro N km da CITTÀ".
+  - task: "Visualizzazione città+provincia nelle card e nel detail"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/index.tsx, /app/frontend/app/group/[id].tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Card home + detail group ora renderizzano
+          `location · city (province)` con `.filter(Boolean).join(" · ")`
+          per gestire i gruppi legacy senza `city`/`province`.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.2"
+  test_sequence: 12
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "Endpoint /api/cities/suggest con autocomplete Photon"
+    - "Rimozione campo street obbligatorio; province+lat+lon dal client"
+    - "Componente CityAutocomplete riutilizzabile"
+    - "Form Crea Gruppo: rimozione VIA + autocomplete città"
+    - "Home + Profilo: autocomplete città manuale (fallback GPS negato)"
+    - "Visualizzazione città+provincia nelle card e nel detail"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Iterazione 12: autocomplete città con Photon. Rimosso VIA. Aggiunta
+      province ovunque. Backend endpoints:
+        GET /api/cities/suggest?q=milan -> [{name, province, region, lat, lon, display}]
+        POST /api/groups accetta {city, province?, lat?, lon?} (no street)
+      Test manuale via curl e UI OK.

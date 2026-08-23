@@ -14,9 +14,10 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useAuth } from "@/src/contexts/auth";
-import { api } from "@/src/lib/api";
+import { api, CitySuggestion } from "@/src/lib/api";
 import { CATEGORIES } from "@/src/lib/categories";
 import { moderateFields } from "@/src/lib/moderation";
+import { CityAutocomplete } from "@/src/components/CityAutocomplete";
 
 const HOURS = [
   "08:00", "09:00", "10:00", "11:00", "12:00", "13:00",
@@ -77,7 +78,8 @@ export default function CreateScreen() {
   const [customCategory, setCustomCategory] = useState("");
   const [location, setLocation] = useState("");
   const [city, setCity] = useState("");
-  const [street, setStreet] = useState("");
+  const [province, setProvince] = useState("");
+  const [cityCoords, setCityCoords] = useState<{ lat: number; lon: number } | null>(null);
   const [description, setDescription] = useState("");
   const [date, setDate] = useState(dayOptions[0].iso);
   const [customDateText, setCustomDateText] = useState("");
@@ -99,7 +101,8 @@ export default function CreateScreen() {
     setCustomCategory("");
     setLocation("");
     setCity("");
-    setStreet("");
+    setProvince("");
+    setCityCoords(null);
     setDescription("");
     setMinPart("2");
     setMaxPart("8");
@@ -123,13 +126,12 @@ export default function CreateScreen() {
       customCategory: isAltro ? customCategory : "",
       location,
       city,
-      street,
     });
     if (modErr) return setError(modErr);
     if (dateError) return setError("Correggi la data prima di continuare");
     if (!location.trim()) return setError("Inserisci un luogo");
-    if (!city.trim()) return setError("Inserisci la città");
-    if (!street.trim()) return setError("Inserisci la via");
+    if (!city.trim()) return setError("Seleziona la città dai suggerimenti");
+    if (!cityCoords) return setError("Seleziona una città dal menu a tendina");
     const minP = parseInt(minPart, 10);
     const maxP = parseInt(maxPart, 10);
     const minA = parseInt(minAge, 10);
@@ -150,7 +152,9 @@ export default function CreateScreen() {
         category_label: catLabel,
         location: location.trim(),
         city: city.trim(),
-        street: street.trim(),
+        province: province.trim() || null,
+        lat: cityCoords?.lat ?? null,
+        lon: cityCoords?.lon ?? null,
         description: description.trim(),
         date,
         time,
@@ -242,28 +246,30 @@ export default function CreateScreen() {
         />
 
         <Text style={styles.label}>CITTÀ</Text>
-        <TextInput
+        <CityAutocomplete
           testID="city-input"
-          style={styles.input}
           value={city}
-          onChangeText={setCity}
           placeholder="Es. Milano"
-          placeholderTextColor="#9A9A9A"
-          autoCapitalize="words"
-          maxLength={60}
+          onChangeText={(t) => {
+            setCity(t);
+            // If the user manually edits after picking, invalidate coords.
+            setCityCoords(null);
+            setProvince("");
+          }}
+          onSelect={(c: CitySuggestion) => {
+            setCity(c.name);
+            setProvince(c.province);
+            setCityCoords({ lat: c.lat, lon: c.lon });
+          }}
         />
-
-        <Text style={styles.label}>VIA</Text>
-        <TextInput
-          testID="street-input"
-          style={styles.input}
-          value={street}
-          onChangeText={setStreet}
-          placeholder="Es. Via Torino 20"
-          placeholderTextColor="#9A9A9A"
-          autoCapitalize="words"
-          maxLength={80}
-        />
+        {province ? (
+          <View style={styles.cityBadgeRow}>
+            <Ionicons name="checkmark-circle" size={14} color="#10B981" />
+            <Text style={styles.cityBadgeText}>
+              {city} · {province}
+            </Text>
+          </View>
+        ) : null}
 
         <Text style={styles.label}>QUANDO</Text>
         <ScrollView
@@ -440,6 +446,18 @@ export default function CreateScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#FDFBF7" },
+  cityBadgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 6,
+  },
+  cityBadgeText: {
+    fontWeight: "800",
+    color: "#10B981",
+    fontSize: 12,
+    letterSpacing: 0.3,
+  },
   headerBlock: {
     paddingHorizontal: 20,
     paddingVertical: 12,

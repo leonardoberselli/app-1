@@ -202,7 +202,11 @@ export default function GroupDetail() {
           <View style={styles.infoCard}>
             <View style={styles.infoRow}>
               <Ionicons name="location-sharp" size={18} color="#FF4747" />
-              <Text style={styles.infoText}>{group.location}</Text>
+              <Text style={styles.infoText}>
+                {[group.location, group.city ? (group.province ? `${group.city} (${group.province})` : group.city) : null]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </Text>
             </View>
             <View style={styles.infoRow}>
               <Ionicons name="calendar" size={18} color="#FF4747" />

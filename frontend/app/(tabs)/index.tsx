@@ -10,7 +10,6 @@ import {
   Image,
   ActivityIndicator,
   Modal,
-  TextInput,
   Linking,
   Alert,
 } from "react-native";
@@ -20,9 +19,10 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { useAuth } from "@/src/contexts/auth";
 import { useLocationPrefs } from "@/src/contexts/location";
-import { api, ApiGroup } from "@/src/lib/api";
+import { api, ApiGroup, CitySuggestion } from "@/src/lib/api";
 import { CATEGORIES, CUSTOM_CATEGORY, findCategory } from "@/src/lib/categories";
 import { formatDate } from "@/src/lib/date";
+import { CityAutocomplete } from "@/src/components/CityAutocomplete";
 
 const ALL_FILTER = { id: "all", label: "Tutti", emoji: "✨", color: "#0A0A0A" };
 
@@ -42,6 +42,7 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [promptOpen, setPromptOpen] = useState(false);
   const [manualCity, setManualCity] = useState("");
+  const [manualPick, setManualPick] = useState<CitySuggestion | null>(null);
   const [promptStep, setPromptStep] = useState<"choose" | "manual">("choose");
   const [manualError, setManualError] = useState<string | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
@@ -113,9 +114,17 @@ export default function HomeScreen() {
       setManualError("Inserisci una città");
       return;
     }
+    if (!manualPick) {
+      setManualError("Seleziona una città dai suggerimenti");
+      return;
+    }
     setManualBusy(true);
     setManualError(null);
-    const res = await setManualLocation(manualCity.trim());
+    const res = await setManualLocation(manualPick.name, {
+      lat: manualPick.lat,
+      lon: manualPick.lon,
+      province: manualPick.province,
+    });
     setManualBusy(false);
     if (!res.ok) {
       setManualError(res.error || "Città non trovata");
@@ -123,6 +132,7 @@ export default function HomeScreen() {
     }
     setPromptOpen(false);
     setManualCity("");
+    setManualPick(null);
   };
 
   const onRefresh = () => {
@@ -162,7 +172,9 @@ export default function HomeScreen() {
         <View style={styles.metaRow}>
           <Ionicons name="location-sharp" size={16} color="#525252" />
           <Text style={styles.metaText} numberOfLines={1}>
-            {item.location}
+            {[item.location, item.city ? (item.province ? `${item.city} (${item.province})` : item.city) : null]
+              .filter(Boolean)
+              .join(" · ")}
           </Text>
         </View>
 
@@ -342,16 +354,22 @@ export default function HomeScreen() {
               </>
             ) : (
               <>
-                <TextInput
-                  testID="location-manual-city"
-                  style={styles.manualInput}
-                  value={manualCity}
-                  onChangeText={setManualCity}
-                  placeholder="Es. Milano"
-                  placeholderTextColor="#9A9A9A"
-                  autoCapitalize="words"
-                  autoFocus
-                />
+                <View style={{ width: "100%" }}>
+                  <CityAutocomplete
+                    testID="location-manual-city"
+                    value={manualCity}
+                    onChangeText={(t) => {
+                      setManualCity(t);
+                      setManualPick(null);
+                    }}
+                    onSelect={(c) => {
+                      setManualCity(c.name);
+                      setManualPick(c);
+                    }}
+                    autoFocus
+                    placeholder="Es. Milano"
+                  />
+                </View>
                 {manualError ? (
                   <Text testID="location-manual-error" style={styles.manualError}>
                     {manualError}
@@ -594,17 +612,5 @@ const styles = StyleSheet.create({
   },
   skipBtn: { paddingVertical: 8 },
   skipBtnText: { color: "#525252", fontWeight: "700", textDecorationLine: "underline" },
-  manualInput: {
-    width: "100%",
-    backgroundColor: "#FFF",
-    borderWidth: 2,
-    borderColor: "#0A0A0A",
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    fontSize: 16,
-    color: "#0A0A0A",
-    fontWeight: "600",
-  },
   manualError: { color: "#FF4747", fontWeight: "800", textAlign: "center" },
 });

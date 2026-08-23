@@ -68,7 +68,9 @@ class GroupCreate(BaseModel):
     category_label: str
     location: str
     city: str
-    street: str
+    province: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
     description: Optional[str] = ""
     date: str
     time: str
@@ -85,7 +87,7 @@ class Group(BaseModel):
     category_label: str
     location: str
     city: Optional[str] = None
-    street: Optional[str] = None
+    province: Optional[str] = None
     lat: Optional[float] = None
     lon: Optional[float] = None
     description: str
@@ -342,6 +344,103 @@ async def _geocode(city: str, street: str = "") -> Optional[Tuple[float, float]]
         return None
 
 
+_PHOTON_URL = "https://photon.komoot.io/api"
+
+
+async def _search_cities(q: str, limit: int = 6) -> List[dict]:
+    """Autocomplete Italian cities/towns/villages by name prefix.
+
+    Uses the Photon (Komoot) OSM autocomplete service — it supports true
+    prefix matching (unlike Nominatim `search`). We only keep results whose
+    country code is IT and whose OSM class/value is a human settlement.
+    Falls back to Nominatim `search` if Photon returns nothing.
+    """
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    ck = f"__cities__|{q.lower()}|{limit}"
+    if ck in _geocode_cache:
+        return _geocode_cache[ck]  # type: ignore
+
+    params_photon = {
+        "q": q,
+        "limit": str(min(max(limit * 3, 6), 20)),  # over-fetch, we'll filter
+        # accept several settlement kinds
+        "osm_tag": ["place:city", "place:town", "place:village", "place:hamlet"],
+        # restrict to Italy
+        "bbox": "6.6273,35.4929,18.8438,47.0921",
+    }
+
+    async with _geocode_lock:
+        global _last_geocode_at
+        loop = asyncio.get_event_loop()
+        wait = _GEOCODE_MIN_INTERVAL_S - (loop.time() - _last_geocode_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last_geocode_at = loop.time()
+
+        raw_features: list = []
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as c:
+                r = await c.get(
+                    _PHOTON_URL,
+                    params=params_photon,
+                    headers={"User-Agent": _NOMINATIM_UA},
+                )
+            if r.status_code == 200:
+                raw_features = (r.json() or {}).get("features", []) or []
+        except Exception as e:
+            try:
+                logger.warning(f"photon suggest error for '{q}': {e}")
+            except Exception:
+                pass
+
+    out: List[dict] = []
+    seen: set = set()
+    for feat in raw_features:
+        p = (feat or {}).get("properties") or {}
+        geom = (feat or {}).get("geometry") or {}
+        if p.get("countrycode") not in ("IT", None):
+            # Photon sometimes omits countrycode for admin regions; only skip
+            # when we know it's non-IT.
+            if p.get("countrycode"):
+                continue
+        if p.get("osm_key") != "place":
+            continue
+        if p.get("osm_value") not in ("city", "town", "village", "hamlet"):
+            continue
+        name = (p.get("name") or "").strip()
+        if not name:
+            continue
+        province = (p.get("county") or p.get("state_district") or "").strip()
+        region = (p.get("state") or "").strip()
+        coords = geom.get("coordinates") or []
+        if len(coords) < 2:
+            continue
+        try:
+            lon = float(coords[0]); lat = float(coords[1])
+        except Exception:
+            continue
+        key = (name.lower(), province.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        display = name + (f" ({province})" if province else "")
+        out.append({
+            "name": name,
+            "province": province,
+            "region": region,
+            "lat": lat,
+            "lon": lon,
+            "display": display,
+        })
+        if len(out) >= limit:
+            break
+
+    _geocode_cache[ck] = out  # type: ignore
+    return out
+
+
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371.0
     dlat = math.radians(lat2 - lat1)
@@ -530,15 +629,12 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
         raise HTTPException(status_code=400, detail="max_age < min_age")
     if not payload.city.strip():
         raise HTTPException(status_code=400, detail="Inserisci la città")
-    if not payload.street.strip():
-        raise HTTPException(status_code=400, detail="Inserisci la via")
     # Content moderation on every free-text field
     _reject_if_forbidden(
         payload.title,
         payload.description or "",
         payload.location,
         payload.city,
-        payload.street,
         payload.category_label,
     )
     # Reject events that are already expired (past date + buffer) at creation
@@ -549,11 +645,13 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
     if event_dt + timedelta(hours=EXPIRED_BUFFER_HOURS) < now_local:
         raise HTTPException(status_code=400, detail="Data del gruppo nel passato")
 
-    # Geocode the address. If it fails, still allow group creation (lat/lon
-    # will just be None and distance filtering won't apply to this group),
-    # so users aren't blocked by transient Nominatim failures.
-    coords = await _geocode(payload.city.strip(), payload.street.strip())
-    lat, lon = (coords if coords else (None, None))
+    # If the client already picked coordinates via the autocomplete, trust
+    # them; otherwise geocode the city name. Failure isn't blocking.
+    lat, lon = payload.lat, payload.lon
+    if lat is None or lon is None:
+        coords = await _geocode(payload.city.strip())
+        if coords:
+            lat, lon = coords
 
     group_id = f"grp_{uuid.uuid4().hex[:12]}"
     owner_participant = {
@@ -568,7 +666,7 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
         "category_label": payload.category_label,
         "location": payload.location.strip(),
         "city": payload.city.strip(),
-        "street": payload.street.strip(),
+        "province": (payload.province or "").strip() or None,
         "lat": lat,
         "lon": lon,
         "description": (payload.description or "").strip(),
@@ -735,6 +833,16 @@ async def post_message(group_id: str, payload: MessageCreate, user: User = Depen
 
 
 # ============================== Geocode (public) ==============================
+
+@api_router.get("/cities/suggest")
+async def cities_suggest(
+    q: str = Query(..., min_length=2, max_length=60),
+    limit: int = Query(6, ge=1, le=10),
+):
+    """Autocomplete Italian cities (public endpoint). Returns a list of
+    {name, province, region, lat, lon, display} objects."""
+    return await _search_cities(q, limit)
+
 
 @api_router.get("/geocode")
 async def geocode(city: str = Query(..., min_length=1, max_length=100), street: str = Query("", max_length=100)):

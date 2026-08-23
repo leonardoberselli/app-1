@@ -1022,11 +1022,9 @@ class TestGeolocationGroupCreate:
         assert "citt" in r.json()["detail"].lower()
 
     def test_missing_street_400(self, api, owner_headers):
-        _time.sleep(NOMINATIM_SLEEP)
-        payload = _group_payload(title="TEST_geo_nostreet", city="Milano", street="")
-        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
-        assert r.status_code == 400
-        assert "via" in r.json()["detail"].lower()
+        # Deprecated: `street` was removed in iteration 12. Missing street is
+        # now silently accepted (200) — this test is skipped intentionally.
+        pytest.skip("street field removed in iteration 12")
 
     def test_missing_city_field_entirely_422(self, api, owner_headers):
         """Removing city key from payload should be a Pydantic 422."""
@@ -1036,15 +1034,15 @@ class TestGeolocationGroupCreate:
         assert r.status_code == 422
 
     def test_missing_street_field_entirely_422(self, api, owner_headers):
-        payload = _group_payload(title="TEST_geo_nostreet_key")
-        payload.pop("street")
-        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
-        assert r.status_code == 422
+        # Deprecated: `street` is now an unknown-but-accepted field. Test is
+        # skipped to keep historical numbering.
+        pytest.skip("street field removed in iteration 12")
 
     def test_create_with_city_and_street_geocodes_milano(self, api, owner_headers):
         _time.sleep(NOMINATIM_SLEEP)
         payload = _group_payload(title="TEST_geo_milano_ok",
                                  city="Milano", street="Via Torino 20")
+        # `street` is silently ignored server-side since iteration 12.
         r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
         assert r.status_code == 200, r.text
         g = r.json()
@@ -1053,7 +1051,8 @@ class TestGeolocationGroupCreate:
         assert 45.3 <= g["lat"] <= 45.6, f"lat out of Milan range: {g['lat']}"
         assert 9.0 <= g["lon"] <= 9.3, f"lon out of Milan range: {g['lon']}"
         assert g["city"] == "Milano"
-        assert g["street"] == "Via Torino 20"
+        # `street` is no longer part of the response model
+        assert "street" not in g or g.get("street") in (None, "")
         pytest.milano_group_id = g["group_id"]
         pytest.milano_lat = g["lat"]
         pytest.milano_lon = g["lon"]
@@ -1065,11 +1064,8 @@ class TestGeolocationGroupCreate:
         assert r.json()["detail"] == FORBIDDEN_DETAIL
 
     def test_reject_moderation_in_street(self, api, owner_headers):
-        payload = _group_payload(title="TEST_geo_mod_street", city="Milano",
-                                 street="Via della drog4")
-        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
-        assert r.status_code == 400
-        assert r.json()["detail"] == FORBIDDEN_DETAIL
+        # Deprecated: no longer moderating a field we don't accept.
+        pytest.skip("street field removed in iteration 12")
 
 
 @pytest.mark.usefixtures("owner_named")

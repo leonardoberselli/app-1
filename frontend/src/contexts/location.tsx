@@ -24,6 +24,9 @@ export type LocationPrefs = {
   source: LocationSource;
   /** User-entered reference city (only when source === "manual"). */
   manualCity: string;
+  /** Province matched to the manual city (from Nominatim autocomplete). */
+  manualProvince: string;
+  /** @deprecated kept for backward-compat with older stored payloads. */
   manualStreet: string;
   /** Whether we have shown the initial permission request already. */
   askedOnce: boolean;
@@ -35,6 +38,7 @@ const DEFAULT_PREFS: LocationPrefs = {
   lon: null,
   source: null,
   manualCity: "",
+  manualProvince: "",
   manualStreet: "",
   askedOnce: false,
 };
@@ -48,8 +52,13 @@ type Ctx = {
   loading: boolean;
   /** Ask the OS for foreground location. Returns whether granted. */
   requestGps: () => Promise<boolean>;
-  /** Resolve a manual reference city via backend Nominatim. */
-  setManualLocation: (city: string, street?: string) => Promise<{ ok: boolean; error?: string }>;
+  /** Resolve/set a manual reference city. If `coords` is provided (from the
+   *  autocomplete suggestion), it is used directly, otherwise the backend
+   *  Nominatim endpoint is called. */
+  setManualLocation: (
+    city: string,
+    coords?: { lat: number; lon: number; province?: string },
+  ) => Promise<{ ok: boolean; error?: string }>;
   setRadiusKm: (km: number) => Promise<void>;
   /** Re-fetch current GPS coordinates. */
   refreshGps: () => Promise<void>;
@@ -152,18 +161,30 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
   }, [prefs, persist]);
 
   const setManualLocation = useCallback(
-    async (city: string, street: string = ""): Promise<{ ok: boolean; error?: string }> => {
+    async (
+      city: string,
+      coords?: { lat: number; lon: number; province?: string },
+    ): Promise<{ ok: boolean; error?: string }> => {
       const c = (city || "").trim();
       if (!c) return { ok: false, error: "Inserisci una città" };
       try {
-        const res = await api.geocode(c, street.trim());
+        let lat: number;
+        let lon: number;
+        if (coords && Number.isFinite(coords.lat) && Number.isFinite(coords.lon)) {
+          lat = coords.lat;
+          lon = coords.lon;
+        } else {
+          const res = await api.geocode(c);
+          lat = res.lat;
+          lon = res.lon;
+        }
         await persist({
           ...prefs,
-          lat: res.lat,
-          lon: res.lon,
+          lat,
+          lon,
           source: "manual",
           manualCity: c,
-          manualStreet: street.trim(),
+          manualProvince: coords?.province || "",
           askedOnce: true,
         });
         return { ok: true };
@@ -189,6 +210,7 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
       lon: null,
       source: null,
       manualCity: "",
+      manualProvince: "",
       manualStreet: "",
     });
   }, [prefs, persist]);
