@@ -9,7 +9,8 @@ export default function TabsLayout() {
   const insets = useSafeAreaInsets();
 
   if (loading) return null;
-  if (!user || !user.name || !user.name.trim()) return <Redirect href="/onboarding" />;
+  if (!user) return <Redirect href="/login" />;
+  if (!user.name || !user.name.trim()) return <Redirect href="/onboarding" />;
 
   return (
     <Tabs

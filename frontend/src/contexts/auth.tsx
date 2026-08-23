@@ -1,52 +1,57 @@
 import React, {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
-  useCallback,
 } from "react";
 import { Platform } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Linking from "expo-linking";
+import * as WebBrowser from "expo-web-browser";
 
 import { api, ApiUser } from "@/src/lib/api";
+import { sessionStore } from "@/src/lib/session-store";
 
-const DEVICE_ID_KEY = "@groupup/device_id";
+// Required by expo-auth-session / openAuthSessionAsync on web so the popup
+// closes correctly on cold redirect. Safe to call at module scope.
+WebBrowser.maybeCompleteAuthSession();
 
-function makeId(): string {
-  // 32 char hex device id (enough uniqueness for our needs)
-  const bytes = new Uint8Array(16);
-  if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
-  }
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
+const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+const EMERGENT_AUTH_URL = "https://auth.emergentagent.com/";
+// Guards against exchanging the same session_id more than once (deep-link
+// listener + openAuthSessionAsync result can both fire for the same link).
+const _exchanged = new Set<string>();
 
-async function loadDeviceId(): Promise<string> {
+function extractSessionId(rawUrl: string | null | undefined): string | null {
+  if (!rawUrl) return null;
+  // Emergent returns session_id in the URL FRAGMENT (hash). Linking.parse()
+  // reads only the query string, so we must match the raw URL directly and
+  // scan both `#session_id=` and `?session_id=`.
+  const m = rawUrl.match(/[?#&]session_id=([^&#]+)/);
+  if (!m) return null;
   try {
-    let id = await AsyncStorage.getItem(DEVICE_ID_KEY);
-    if (id && id.length >= 16) return id;
-    id = "dev_" + makeId();
-    await AsyncStorage.setItem(DEVICE_ID_KEY, id);
-    return id;
+    return decodeURIComponent(m[1]);
   } catch {
-    // If storage fails, at least run this session with a random id
-    return "dev_" + makeId();
+    return m[1];
   }
 }
 
 type AuthContextValue = {
-  // for backward compat with old screens
-  fbUser: { uid: string } | null;
   user: ApiUser | null;
   loading: boolean;
+  signingIn: boolean;
   authError: string | null;
+  /**
+   * Compat aliases kept so older screens (profile, create, group/[id],
+   * profile-edit) keep working: they use `deviceId` purely as a readiness
+   * flag. It now returns the authenticated user_id when logged in.
+   */
+  deviceId: string | null;
+  fbUser: { uid: string } | null;
   emailVerified: boolean;
   needsEmailVerification: boolean;
-  deviceId: string | null;
+  signIn: () => Promise<{ ok: boolean; error?: string }>;
   signOut: () => Promise<void>;
   refreshMe: () => Promise<void>;
   setUser: (u: ApiUser | null) => void;
@@ -54,81 +59,237 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-/**
- * Auth-less mode: on first launch we generate a random device ID and store it
- * locally. It is sent as a Bearer token on every API call. The backend uses
- * this ID as the user identifier — no login required, users just open the app
- * and are in. The user can edit their name/avatar/gender/age in the profile.
- */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [deviceId, setDeviceId] = useState<string | null>(null);
   const [user, setUser] = useState<ApiUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [signingIn, setSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+
+  // Captures deep-link URLs that arrive while the auth-session is open.
+  // On Android, openAuthSessionAsync frequently returns `dismiss` with no URL
+  // even after a successful login, so we must keep this fallback.
+  const capturedUrlRef = useRef<string | null>(null);
 
   const refreshMe = useCallback(async () => {
     try {
       const me = await api.me();
       setUser(me);
-    } catch (e) {
-      console.warn("refreshMe failed", e);
+    } catch (e: any) {
+      console.warn("refreshMe failed", e?.message || e);
+      // 401 → session expired/revoked → drop it locally.
+      if (typeof e?.message === "string" && /session|token/i.test(e.message)) {
+        await sessionStore.clear();
+        (globalThis as any).__GROUPUP_SESSION_TOKEN__ = null;
+        setUser(null);
+      }
     }
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      const id = await loadDeviceId();
-      // expose the id globally so api.ts can read it synchronously
-      (globalThis as any).__GROUPUP_DEVICE_ID__ = id;
-      setDeviceId(id);
+  const applySession = useCallback(
+    async (session_id: string): Promise<{ ok: boolean; error?: string }> => {
+      if (_exchanged.has(session_id)) return { ok: true };
+      _exchanged.add(session_id);
       try {
-        const me = await api.me();
-        setUser(me);
+        const resp = await fetch(`${BASE}/api/auth/session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id }),
+        });
+        const text = await resp.text();
+        const data = text ? JSON.parse(text) : null;
+        if (!resp.ok) {
+          const detail = (data && (data.detail || data.message)) || resp.statusText;
+          return { ok: false, error: typeof detail === "string" ? detail : "Errore autenticazione" };
+        }
+        const token: string = data?.session_token;
+        if (!token) return { ok: false, error: "Risposta autenticazione incompleta" };
+        await sessionStore.set(token);
+        (globalThis as any).__GROUPUP_SESSION_TOKEN__ = token;
+        if (data?.user) setUser(data.user as ApiUser);
+        return { ok: true };
       } catch (e: any) {
-        console.warn("api.me failed", e);
-        setAuthError(e?.message || "Errore di connessione");
-      } finally {
-        setLoading(false);
+        return { ok: false, error: e?.message || "Errore di rete" };
       }
-    })();
+    },
+    [],
+  );
+
+  // ---------- Web-only: strip session_id from the URL after exchange ----------
+  const cleanWebUrl = useCallback(() => {
+    if (Platform.OS !== "web") return;
+    try {
+      const w: any = globalThis as any;
+      const url = new URL(w.location.href);
+      // hash cleanup
+      if (url.hash && url.hash.includes("session_id")) {
+        const params = new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : url.hash);
+        params.delete("session_id");
+        const rest = params.toString();
+        url.hash = rest ? `#${rest}` : "";
+      }
+      if (url.searchParams.has("session_id")) {
+        url.searchParams.delete("session_id");
+      }
+      w.history.replaceState(w.history.state, "", url.toString());
+    } catch {}
   }, []);
 
-  const signOut = useCallback(async () => {
-    // "Reset device" — new random ID, backend will auto-create a new user.
-    try {
-      await AsyncStorage.removeItem(DEVICE_ID_KEY);
-      const id = await loadDeviceId();
-      (globalThis as any).__GROUPUP_DEVICE_ID__ = id;
-      setDeviceId(id);
+  // ---------- Bootstrap: check for pending session_id, then existing token ----------
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
       try {
-        const me = await api.me();
-        setUser(me);
-      } catch {}
+        // 1) Web cold start: session_id may be in window.location.
+        if (Platform.OS === "web") {
+          try {
+            const w: any = globalThis as any;
+            const href: string | undefined = w?.location?.href;
+            const sid = extractSessionId(href);
+            if (sid) {
+              const res = await applySession(sid);
+              cleanWebUrl();
+              if (!cancelled && !res.ok) setAuthError(res.error || null);
+            }
+          } catch {}
+        }
+
+        // 2) Mobile cold start: check initial URL for a pending session_id.
+        if (Platform.OS !== "web") {
+          try {
+            const initial = await Linking.getInitialURL();
+            const sid = extractSessionId(initial);
+            if (sid) {
+              const res = await applySession(sid);
+              if (!cancelled && !res.ok) setAuthError(res.error || null);
+            }
+          } catch {}
+        }
+
+        // 3) Existing session_token? Validate with /me.
+        const token = await sessionStore.get();
+        if (token) {
+          (globalThis as any).__GROUPUP_SESSION_TOKEN__ = token;
+          try {
+            const me = await api.me();
+            if (!cancelled) setUser(me);
+          } catch (e: any) {
+            // 401 → clear it silently, user will land on /login
+            await sessionStore.clear();
+            (globalThis as any).__GROUPUP_SESSION_TOKEN__ = null;
+            if (!cancelled && e?.message && !/session|token|401/i.test(e.message)) {
+              setAuthError(e.message);
+            }
+          }
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    // Mobile: listen for hot deep-links (relaunch via URL) while app is alive.
+    let sub: { remove: () => void } | null = null;
+    if (Platform.OS !== "web") {
+      sub = Linking.addEventListener("url", (event) => {
+        capturedUrlRef.current = event.url;
+        const sid = extractSessionId(event.url);
+        if (sid) {
+          applySession(sid).then((res) => {
+            if (!res.ok) setAuthError(res.error || null);
+          });
+        }
+      });
+    }
+
+    return () => {
+      cancelled = true;
+      sub?.remove();
+    };
+  }, [applySession, cleanWebUrl]);
+
+  // ---------- signIn: opens the Google auth flow ----------
+  const signIn = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
+    setAuthError(null);
+    setSigningIn(true);
+    try {
+      if (Platform.OS === "web") {
+        const w: any = globalThis as any;
+        const redirectUrl = `${w.location.origin}/`;
+        w.location.href = `${EMERGENT_AUTH_URL}?redirect=${encodeURIComponent(redirectUrl)}`;
+        // Navigation replaces the whole page — nothing else to do here.
+        return { ok: true };
+      }
+
+      // ---- Mobile ----
+      const redirectUrl = Linking.createURL("");
+      const authUrl = `${EMERGENT_AUTH_URL}?redirect=${encodeURIComponent(redirectUrl)}`;
+
+      capturedUrlRef.current = null;
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUrl);
+
+      // Try each source in order: result.url → deep-link listener → getInitialURL.
+      let url: string | null = null;
+      if (result.type === "success" && (result as any).url) {
+        url = (result as any).url;
+      }
+      if (!url && capturedUrlRef.current) url = capturedUrlRef.current;
+      if (!url) {
+        try {
+          url = await Linking.getInitialURL();
+        } catch {}
+      }
+
+      const sid = extractSessionId(url);
+      if (!sid) {
+        // All three sources empty → user really cancelled (or an error).
+        return { ok: false, error: "Accesso annullato" };
+      }
+
+      const res = await applySession(sid);
+      if (!res.ok) setAuthError(res.error || null);
+      return res;
+    } catch (e: any) {
+      const msg = e?.message || "Impossibile aprire il login";
+      setAuthError(msg);
+      return { ok: false, error: msg };
+    } finally {
+      setSigningIn(false);
+    }
+  }, [applySession]);
+
+  // ---------- signOut ----------
+  const signOut = useCallback(async () => {
+    try {
+      try {
+        await api.logout();
+      } catch {
+        // ignore — best effort server revoke
+      }
+      await sessionStore.clear();
+      (globalThis as any).__GROUPUP_SESSION_TOKEN__ = null;
+      setUser(null);
+      setAuthError(null);
     } catch (e) {
       console.warn("signOut failed", e);
     }
-    // Suppress "unused" warning on web-only branch
-    void Platform.OS;
   }, []);
 
-  return (
-    <AuthContext.Provider
-      value={{
-        fbUser: deviceId ? { uid: deviceId } : null,
-        user,
-        loading,
-        authError,
-        emailVerified: true,
-        needsEmailVerification: false,
-        deviceId,
-        signOut,
-        refreshMe,
-        setUser,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  );
+  const value: AuthContextValue = {
+    user,
+    loading,
+    signingIn,
+    authError,
+    deviceId: user?.user_id ?? null,
+    fbUser: user?.user_id ? { uid: user.user_id } : null,
+    emailVerified: true,
+    needsEmailVerification: false,
+    signIn,
+    signOut,
+    refreshMe,
+    setUser,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthContextValue {

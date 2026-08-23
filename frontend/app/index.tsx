@@ -17,10 +17,12 @@ export default function Index() {
 
   useEffect(() => {
     if (loading) return;
-    if (!user) return;
-    // Send back to onboarding when identity, age gate, or terms acceptance
-    // is missing/outdated. The app is 14+ only and every user must accept
-    // the current liability disclaimer before entering.
+    // Not authenticated \u2192 send to Google login screen.
+    if (!user) {
+      router.replace("/login");
+      return;
+    }
+    // Authenticated but onboarding incomplete (missing name/age/terms).
     if (
       !user.name ||
       !user.name.trim() ||

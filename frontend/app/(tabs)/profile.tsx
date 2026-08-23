@@ -397,12 +397,12 @@ export default function ProfileScreen() {
           activeOpacity={0.85}
           onPress={async () => {
             await signOut();
-            router.replace("/");
+            router.replace("/login");
           }}
           style={styles.logout}
         >
-          <Ionicons name="refresh" size={20} color="#0A0A0A" />
-          <Text style={styles.logoutText}>Reimposta account</Text>
+          <Ionicons name="log-out" size={20} color="#0A0A0A" />
+          <Text style={styles.logoutText}>Esci</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -430,7 +430,7 @@ export default function ProfileScreen() {
                             try {
                               await api.deleteAccount();
                               await signOut();
-                              router.replace("/");
+                              router.replace("/login");
                             } catch (e: any) {
                               Alert.alert(
                                 "Errore",

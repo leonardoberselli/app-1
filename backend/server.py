@@ -14,6 +14,12 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Literal, Tuple
 from datetime import datetime, timezone, timedelta
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 try:
     # stdlib on Python 3.9+; container has 3.11
     from zoneinfo import ZoneInfo
@@ -37,7 +43,8 @@ api_router = APIRouter(prefix="/api")
 # ============================== Models ==============================
 
 class User(BaseModel):
-    user_id: str            # Device UUID (bearer token)
+    user_id: str            # Custom app id (user_{uuid_hex[:12]})
+    email: str              # Verified via Google
     name: str = ""
     picture: Optional[str] = None
     gender: Optional[Literal["male", "female", "other"]] = None
@@ -47,6 +54,10 @@ class User(BaseModel):
     terms_version: Optional[str] = None
     terms_accepted_at: Optional[datetime] = None
     created_at: datetime
+
+
+class GoogleSessionExchange(BaseModel):
+    session_id: str
 
 
 class AcceptTermsIn(BaseModel):
@@ -191,14 +202,12 @@ def _strip(d: dict) -> dict:
     return d
 
 
-_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{8,128}$")
-
-
 def _user_from_doc(doc: dict) -> User:
     doc = _strip(dict(doc))
     # Drop obsolete Firebase fields if present
-    for k in ("email", "email_verified", "providers"):
+    for k in ("email_verified", "providers"):
         doc.pop(k, None)
+    doc.setdefault("email", "")
     doc.setdefault("name", "")
     doc.setdefault("picture", None)
     doc.setdefault("gender", None)
@@ -209,41 +218,64 @@ def _user_from_doc(doc: dict) -> User:
     return User(**doc)
 
 
-async def _get_or_create_user(device_id: str) -> dict:
-    """Find or create a MongoDB user keyed by the device UUID.
+# NOTE: user creation now happens only via Google Sign-In in
+# `POST /api/auth/session`. The legacy device-UUID auto-create helper has
+# been removed; there is no anonymous access path anymore.
 
-    There is no login: the frontend sends a locally-generated device UUID as a
-    Bearer token; we treat it as the user_id. The first call for a new device
-    auto-creates an empty profile; the user then fills in name (mandatory) and
-    optionally photo/gender/age via /auth/me.
-    """
-    existing = await db.users.find_one({"user_id": device_id}, {"_id": 0})
-    if existing:
-        return existing
 
-    doc = {
-        "user_id": device_id,
-        "name": "",
-        "picture": None,
-        "gender": None,
-        "age": None,
-        "profile_complete": False,
-        "terms_version": None,
-        "terms_accepted_at": None,
-        "created_at": _now(),
-    }
-    await db.users.insert_one(dict(doc))
-    return _strip(doc)
+# User IDs are now generated server-side as `user_{uuid_hex[:12]}` after the
+# Google exchange, but we keep this permissive regex for validation of
+# report target_ids and admin actions where the value comes from user input.
+_USER_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{8,128}$")
+
+_SESSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-\.]{16,512}$")
+
+# In-memory guard so a session_id delivered twice by the OS (deep link + auth
+# session result on Android) is exchanged only once. Small TTL keeps the set
+# bounded — the underlying Emergent session_id is single-use anyway.
+_EXCHANGED_SESSION_IDS: dict[str, float] = {}
+_EXCHANGE_TTL_SECONDS = 300
+
+
+def _sweep_exchanged_ids() -> None:
+    now = datetime.now(timezone.utc).timestamp()
+    stale = [k for k, t in _EXCHANGED_SESSION_IDS.items() if now - t > _EXCHANGE_TTL_SECONDS]
+    for k in stale:
+        _EXCHANGED_SESSION_IDS.pop(k, None)
+
+
+async def _lookup_session_user(session_token: str) -> Optional[User]:
+    """Given a Bearer session_token, load the corresponding user (or None
+    when the session is missing or expired)."""
+    sess = await db.user_sessions.find_one(
+        {"session_token": session_token}, {"_id": 0}
+    )
+    if not sess:
+        return None
+    exp = sess.get("expires_at")
+    if exp is not None:
+        # Normalize naive datetimes coming from MongoDB before comparison.
+        if isinstance(exp, datetime) and exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if isinstance(exp, datetime) and exp < datetime.now(timezone.utc):
+            await db.user_sessions.delete_one({"session_token": session_token})
+            return None
+    doc = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
+    if not doc:
+        return None
+    return _user_from_doc(doc)
 
 
 async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing device id")
-    device_id = authorization.split(" ", 1)[1].strip()
-    if not _DEVICE_ID_RE.match(device_id):
-        raise HTTPException(status_code=401, detail="Device id non valido")
-    doc = await _get_or_create_user(device_id)
-    return _user_from_doc(doc)
+        raise HTTPException(status_code=401, detail="Missing session token")
+    token = authorization.split(" ", 1)[1].strip()
+    if not _SESSION_TOKEN_RE.match(token):
+        raise HTTPException(status_code=401, detail="Session token non valido")
+    user = await _lookup_session_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sessione scaduta o non valida")
+    return user
 
 
 async def get_current_user_optional(
@@ -254,11 +286,10 @@ async def get_current_user_optional(
     accessible while still tailoring the response to the caller."""
     if not authorization or not authorization.startswith("Bearer "):
         return None
-    device_id = authorization.split(" ", 1)[1].strip()
-    if not _DEVICE_ID_RE.match(device_id):
+    token = authorization.split(" ", 1)[1].strip()
+    if not _SESSION_TOKEN_RE.match(token):
         return None
-    doc = await _get_or_create_user(device_id)
-    return _user_from_doc(doc)
+    return await _lookup_session_user(token)
 
 
 # ============================== Age policy ==============================
@@ -646,6 +677,110 @@ async def _purge_expired_groups(force: bool = False) -> List[str]:
 
 # ============================== Auth ==============================
 
+EMERGENT_AUTH_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
+SESSION_LIFETIME = timedelta(days=7)
+
+
+@api_router.post("/auth/session", response_model=dict)
+async def exchange_google_session(payload: GoogleSessionExchange):
+    """Exchange the `session_id` returned by the Emergent Google Auth flow
+    for a durable app session token. Also lazily creates/updates the user
+    record based on the verified Google identity.
+
+    Returns: `{ session_token, user }` — the client stores the token in
+    SecureStore and sends it as `Authorization: Bearer <session_token>` on
+    every subsequent API call.
+    """
+    session_id = (payload.session_id or "").strip()
+    if not session_id or len(session_id) < 8:
+        raise HTTPException(status_code=400, detail="session_id mancante")
+
+    # Replay guard (session_id is single-use upstream, but the OS may
+    # deliver the deep link twice on Android).
+    _sweep_exchanged_ids()
+    if session_id in _EXCHANGED_SESSION_IDS:
+        raise HTTPException(status_code=409, detail="session_id già utilizzato")
+    _EXCHANGED_SESSION_IDS[session_id] = datetime.now(timezone.utc).timestamp()
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                EMERGENT_AUTH_URL,
+                headers={"X-Session-ID": session_id},
+            )
+    except httpx.HTTPError as exc:
+        logger.exception("Emergent auth call failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Auth provider non raggiungibile")
+
+    if resp.status_code != 200:
+        logger.warning("Emergent auth rejected session_id: %s", resp.text[:200])
+        raise HTTPException(status_code=401, detail="Google session non valida o scaduta")
+
+    data = resp.json() or {}
+    email = (data.get("email") or "").strip().lower()
+    google_name = (data.get("name") or "").strip()
+    google_picture = data.get("picture") or None
+    session_token = (data.get("session_token") or "").strip()
+    if not email or not session_token:
+        raise HTTPException(status_code=502, detail="Risposta auth incompleta")
+    if not _SESSION_TOKEN_RE.match(session_token):
+        raise HTTPException(status_code=502, detail="Formato session_token non valido")
+
+    now = _now()
+    # Upsert user keyed by email so a returning user re-uses their user_id
+    # (and therefore all their groups/messages/reports).
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        upd: dict = {}
+        # Auto-populate name/picture only if empty, to respect user edits.
+        if not existing.get("name") and google_name:
+            upd["name"] = google_name[:40]
+        if not existing.get("picture") and google_picture:
+            upd["picture"] = google_picture
+        if upd:
+            await db.users.update_one({"user_id": user_id}, {"$set": upd})
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one(
+            {
+                "user_id": user_id,
+                "email": email,
+                "name": google_name[:40] if google_name else "",
+                "picture": google_picture,
+                "gender": None,
+                "age": None,
+                "profile_complete": False,
+                "terms_version": None,
+                "terms_accepted_at": None,
+                "created_at": now,
+            }
+        )
+
+    # Store the session (7-day sliding window matches Emergent's default).
+    await db.user_sessions.insert_one(
+        {
+            "session_token": session_token,
+            "user_id": user_id,
+            "created_at": now,
+            "expires_at": now + SESSION_LIFETIME,
+        }
+    )
+    fresh = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    return {"session_token": session_token, "user": _user_from_doc(fresh).model_dump(mode="json")}
+
+
+@api_router.post("/auth/logout")
+async def auth_logout(authorization: Optional[str] = Header(None)):
+    """Revoke the current session server-side. Idempotent: returns ok even
+    when the token is unknown (already logged out)."""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        if _SESSION_TOKEN_RE.match(token):
+            await db.user_sessions.delete_one({"session_token": token})
+    return {"ok": True}
+
+
 @api_router.get("/auth/me", response_model=User)
 async def auth_me(user: User = Depends(get_current_user)):
     return user
@@ -729,6 +864,8 @@ async def _delete_user_cascade(user_id: str) -> dict:
     )
     # Finally, drop the user record itself
     await db.users.delete_one({"user_id": user_id})
+    # Revoke any active session
+    await db.user_sessions.delete_many({"user_id": user_id})
     return {"ok": True, "deleted_user": user_id, "deleted_groups": owned_ids}
 
 
@@ -783,7 +920,7 @@ async def get_public_user(target_id: str, user: User = Depends(get_current_user)
     the caller and the target share at least one group (participant lists
     of any group). Callers can always view their own profile.
     """
-    if not _DEVICE_ID_RE.match(target_id):
+    if not _USER_ID_RE.match(target_id):
         raise HTTPException(status_code=400, detail="user_id non valido")
     target = await db.users.find_one({"user_id": target_id}, {"_id": 0})
 
@@ -1361,7 +1498,7 @@ async def admin_delete_user(user_id: str, _ok: bool = Depends(require_admin)):
     """Ban a user: remove their account, their created groups (with chat),
     their participation in other groups, and all their messages. Related
     reports are marked reviewed."""
-    if not _DEVICE_ID_RE.match(user_id):
+    if not _USER_ID_RE.match(user_id):
         raise HTTPException(status_code=400, detail="user_id non valido")
     u = await db.users.find_one({"user_id": user_id}, {"_id": 0})
     if not u:
@@ -1399,14 +1536,15 @@ logger = logging.getLogger(__name__)
 async def on_startup():
     try:
         await db.users.create_index("user_id", unique=True)
+        # Email uniqueness (case-insensitive callers pre-lowercase) — sparse
+        # so historic records without an email don't block insert.
+        await db.users.create_index("email", unique=True, sparse=True)
         await db.groups.create_index("group_id", unique=True)
         await db.groups.create_index("category")
         await db.messages.create_index("group_id")
-        # Drop any legacy Firebase indexes if they exist
-        try:
-            await db.users.drop_index("email_1")
-        except Exception:
-            pass
+        # Session store: unique token + TTL cleanup
+        await db.user_sessions.create_index("session_token", unique=True)
+        await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
     except Exception as e:
         logger.warning(f"index creation issue: {e}")
 

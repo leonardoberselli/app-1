@@ -1,7 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { sessionStore } from "@/src/lib/session-store";
+
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
-const DEVICE_ID_KEY = "@groupup/device_id";
 
 export type PublicUser = {
   user_id: string;
@@ -119,15 +120,11 @@ async function getAdminSecret(): Promise<string | null> {
   }
 }
 
-async function getDeviceId(): Promise<string | null> {
-  // auth.tsx exposes the current id synchronously via globalThis for perf.
-  const cached = (globalThis as any).__GROUPUP_DEVICE_ID__;
+async function getSessionToken(): Promise<string | null> {
+  // auth.tsx exposes the current token synchronously via globalThis for perf.
+  const cached = (globalThis as any).__GROUPUP_SESSION_TOKEN__;
   if (typeof cached === "string" && cached.length > 0) return cached;
-  try {
-    return await AsyncStorage.getItem(DEVICE_ID_KEY);
-  } catch {
-    return null;
-  }
+  return sessionStore.get();
 }
 
 async function request<T>(
@@ -136,8 +133,8 @@ async function request<T>(
 ): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (opts.auth !== false) {
-    const id = await getDeviceId();
-    if (id) headers.Authorization = `Bearer ${id}`;
+    const token = await getSessionToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
   }
   if (opts.admin) {
     const secret = await getAdminSecret();
@@ -160,6 +157,7 @@ async function request<T>(
 export const api = {
   // ---- Auth ----
   me: () => request<ApiUser>("/auth/me"),
+  logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
   updateProfile: (payload: {
     name?: string;
     picture?: string;

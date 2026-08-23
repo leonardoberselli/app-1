@@ -219,11 +219,11 @@ export default function Onboarding() {
         </TouchableOpacity>
 
         <Text style={styles.footnote}>
-          Nessun account, nessuna password. Potrai completare foto e sesso
+          Il tuo account \u00e8 collegato a Google. Potrai completare foto e sesso
           quando vuoi dalla scheda Profilo.
         </Text>
         {user?.user_id ? (
-          <Text style={styles.deviceId}>ID dispositivo: {user.user_id.slice(0, 12)}…</Text>
+          <Text style={styles.deviceId}>ID: {user.user_id.slice(0, 12)}\u2026</Text>
         ) : null}
       </KeyboardAwareScrollView>
 

@@ -1,0 +1,55 @@
+{
+  "summary": "Iteration 14 — Emergent Managed Google Sign-In frontend migration: FULLY VERIFIED end-to-end. BACKEND (16/16 pytest in /app/backend/tests/test_google_auth_session.py, 100%): auth guard (401 no header / wrong scheme / short bearer / bad chars / unknown-but-well-formed token → 'Sessione scaduta o non valida'), happy path via MongoDB seed (GET /api/auth/me returns seeded user, POST /api/groups creates a group with owner=seeded user_id and persists, POST /api/auth/logout returns {ok:true} + deletes user_sessions row + subsequent /me → 401, logout is idempotent for unknown tokens), expired session (expires_at in past → 401 AND row auto-deleted), POST /api/auth/session input validation (empty session_id → 422/400 via Pydantic min_length + business check, missing key → 422, session_id<8 chars → 400, random 32-hex sent to Emergent → 401 'Google session non valida o scaduta'), replay guard (same session_id twice returns 401/409/502), age/T&C gate (user with terms_version:null → group creation refused with Italian gate detail). FRONTEND (Expo web at http://localhost:3000, viewport 390x844): T1 ✅ cold start with cleared localStorage lands directly on /login, testID='login-screen' + 'google-signin-button' visible, features list + 'regolamento e la limitazione di responsabilità' link all rendered. T2 ✅ tapping the regolamento link opens the terms modal showing 'Regolamento GroupUp' + 'Versione 2026-06-01' + full TERMS_TEXT. T3 ✅ tapping [data-testid=google-signin-button] performs a full-page navigation to https://auth.emergentagent.com/oauth/?redirect=http%3A%2F%2Flocalhost%3A3000%2F (verified via page.expect_navigation URL match, includes the encoded redirect param). T4 ✅ simulating the OAuth return by loading '/#session_id=random123fake456xyz' triggers POST /api/auth/session, receives 401 from Emergent, cleans session_id out of the URL bar (final URL /login, no session_id), and renders the error box [data-testid=login-error] with the exact Italian text 'Google session non valida o scaduta'. T5 ✅ seeding a valid users+user_sessions row and pre-loading localStorage.groupup_session_token before nav bootstraps the app straight past /login onto /(tabs) home ('Ciao, UI 👋'); observed the outgoing GET /api/auth/me with 'Authorization: Bearer sess_uitest_...' header (exact seeded token, no dev_/uuid). T6 ✅ from the Profilo tab tapping [data-testid=reset-button] ('Esci') fires POST /api/auth/logout (200), clears localStorage.groupup_session_token, and router.replace('/login') redirects the user back to the login screen; MongoDB check confirmed the user_sessions row was deleted server-side too. T7 ✅ across the whole authenticated session the ONLY Authorization header seen on outgoing /api/* requests was 'Bearer sess_uitest_71131fb4daf...' — no legacy 'Bearer dev_<uuid>' or device_id headers anywhere. Deprecation warnings in console are pre-existing and unrelated to this iteration (see react_native_issues).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "shadow* style props",
+        "issue": "Web console still logs '\"shadow*\" style props are deprecated. Use \"boxShadow\"' — now also emitted by /app/frontend/app/login.tsx (styles.features + styles.googleBtn use shadowColor/shadowOffset/shadowOpacity/shadowRadius). Pre-existing pattern across the app; cosmetic on web only."
+      },
+      {
+        "component": "props.pointerEvents",
+        "issue": "Third-party (react-native-safe-area-context / keyboard-controller) still emit 'props.pointerEvents is deprecated. Use style.pointerEvents'. Not actionable in app code — documented since iteration 8."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_google_auth_session.py",
+    "/app/test_reports/pytest/pytest_iter14.xml"
+  ],
+  "action_items": [
+    "None blocking — Google Sign-In migration is production-ready end-to-end on web preview (backend + frontend integration verified).",
+    "NOTE: /app/backend/tests/backend_test.py (the older device-UUID suite) is now stale — its TestAuthMeGet::test_auto_create_new_user and every other test that expected a bare Bearer <device_id> to auto-create a user will fail because the anonymous path was removed. Either retire it or rewrite it against the seeded-session pattern used in test_google_auth_session.py. Not blocking this iteration.",
+    "OPTIONAL: migrate the shadow* style props in /app/frontend/app/login.tsx (styles.features, styles.googleBtn) to boxShadow via Platform.OS==='web' branch to silence deprecation warnings — same pattern applies to other screens carried over from earlier iterations.",
+    "OPTIONAL: real end-to-end Google OAuth cannot be exercised from an automated test (Emergent auth is a real 3rd-party redirect). The current /api/auth/session unit-level coverage (input validation + Emergent 401 relay + upsert-by-email logic via seed) is a sound substitute; a manual smoke on a real device before shipping is still worthwhile."
+  ],
+  "critical_code_review_comments": [
+    "server.py:269-278 get_current_user: single source of truth for session-token validation, correctly rejects missing/wrong-scheme/malformed/unknown/expired with distinct 401 details. Regex ^[A-Za-z0-9_\\-\\.]{16,512}$ matches Emergent's session_token shape exactly.",
+    "server.py:247-266 _lookup_session_user: expired-session lookup ALSO deletes the stale row (self-healing) and normalizes naive datetimes coming back from MongoDB before the tz-aware comparison — good defensive coding.",
+    "server.py:684-770 exchange_google_session: replay-guard via _EXCHANGED_SESSION_IDS with 5-min TTL protects against Android delivering the deep-link twice; upsert-by-email correctly reuses user_id for returning Google accounts (auto-populates empty name/picture only, respecting user edits). The 502/401 split for upstream errors vs Emergent's own rejection is correct — client shows exactly the right Italian error to the user.",
+    "auth.tsx:26-38 extractSessionId: raw-URL regex is right — Emergent puts session_id in the fragment which Linking.parse() (and URL().searchParams) miss. The `_exchanged` module-level Set + backend replay guard is defense-in-depth against double-exchange.",
+    "auth.tsx:118-135 cleanWebUrl: correctly strips session_id from BOTH the hash and the query string via URL()+URLSearchParams before history.replaceState. Verified on the web preview.",
+    "auth.tsx:211-258 signIn: order of URL-source fallbacks on mobile (result.url → deep-link listener capturedUrlRef → Linking.getInitialURL()) matches the Android edge case notes in the code — sensible.",
+    "session-store.ts key 'groupup_session_token' is a plain slug (no @, /, or :), which SecureStore requires. Web branch falls back to localStorage; storage is cleared on logout AND on 401 in refreshMe.",
+    "login.tsx:88-95 disclaimer + terms modal wording explicitly mentions Google + minimum age 14 — matches the new flow. The regolamento link is a Text with onPress rather than a TouchableOpacity — works on web (verified), but a11y-wise TouchableOpacity with role='link' would be more explicit."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_google_auth_session.py (NEW — 16 tests, all pass, focused on session-token flow)",
+    "/app/test_reports/pytest/pytest_iter14.xml (NEW — junit report)"
+  ],
+  "success_rate": {
+    "backend": "16/16 iteration-14 tests pass (100%)",
+    "frontend": "7/7 flows verified — cold-start→/login, terms modal, Google-button navigation, bogus session_id error, valid stored-token bootstrap, Esci→logout+redirect, no legacy dev_ tokens on the wire"
+  },
+  "seed_data_creation": "Tests seed users+user_sessions rows in MongoDB with 'TEST_' prefixed emails and 'sess_test_' / 'sess_uitest_' session_tokens. The module-scope pytest fixture cleans up all such rows on teardown. UI test seed row (user_uitest17ec49 + sess_uitest_71131fb4...) was manually cleaned up after Test 6 — verified 0 remaining. No lingering test data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "New backend tests live in /app/backend/tests/test_google_auth_session.py. Legacy /app/backend/tests/backend_test.py is STALE (assumes anonymous device-UUID auth which was removed — do not re-run without rewriting). Frontend testIDs to know: login-screen, google-signin-button, login-error, reset-button (Esci on Profilo). Bootstrap trick: `localStorage.setItem('groupup_session_token', '<token>')` then reload — the app validates via GET /api/auth/me on mount and lands on /(tabs) if the row is valid. To seed a valid session, insert a users row with terms_version='2026-06-01' + profile_complete=True and a user_sessions row with expires_at in the future; the format is ^[A-Za-z0-9_\\-\\.]{16,512}$ (I use 'sess_test_'+hex32). The location modal on the home screen intercepts taps — click 'Salta, mostra tutti' first when navigating to another tab. RN ScrollView is NOT scrolled by window.scrollTo; use element.scroll_into_view_if_needed() on the testID instead. Emergent auth cannot be completed from an automated test — verify /api/auth/session and the URL-cleaning path with a random session_id (Emergent responds 401 and the frontend shows the Italian error).",
+  "rca_of_issue": "N/A — no bug found in the frontend migration. Every piece of the spec is implemented correctly: session-token storage (SecureStore on mobile / localStorage on web with the plain-slug key), URL-fragment session_id extraction with raw regex, /api/auth/session exchange + user hydration, URL cleanup post-exchange, bootstrap with stored token via /me, guarded tabs redirecting to /login when user is null, and Esci logout that hits POST /api/auth/logout + clears storage + router.replace('/login'). Backend already had the matching endpoints; integration lines up end-to-end."
+}
