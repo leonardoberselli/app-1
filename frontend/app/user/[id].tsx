@@ -14,6 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { api, PublicUser } from "@/src/lib/api";
 import { useAuth } from "@/src/contexts/auth";
+import { ReportSheet } from "@/src/components/ReportSheet";
 
 /**
  * Public profile view of another user. Accessible from group participant
@@ -28,6 +29,7 @@ export default function UserProfile() {
   const [profile, setProfile] = useState<PublicUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,7 +70,18 @@ export default function UserProfile() {
           <Ionicons name="chevron-back" size={26} color="#0A0A0A" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>PROFILO</Text>
-        <View style={{ width: 42 }} />
+        {profile && !isMe ? (
+          <TouchableOpacity
+            testID="report-user-button"
+            onPress={() => setReportOpen(true)}
+            style={styles.reportBtn}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="flag" size={18} color="#FF4747" />
+          </TouchableOpacity>
+        ) : (
+          <View style={{ width: 42 }} />
+        )}
       </View>
 
       {loading ? (
@@ -129,6 +142,16 @@ export default function UserProfile() {
           </View>
         </ScrollView>
       ) : null}
+
+      {profile && !isMe && (
+        <ReportSheet
+          visible={reportOpen}
+          onClose={() => setReportOpen(false)}
+          targetType="user"
+          targetId={profile.user_id}
+          targetLabel={profile.name}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -149,6 +172,16 @@ const styles = StyleSheet.create({
     height: 42,
     alignItems: "center",
     justifyContent: "center",
+  },
+  reportBtn: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: "#FF4747",
+    backgroundColor: "#FFF",
   },
   headerTitle: {
     fontWeight: "900",

@@ -71,6 +71,52 @@ export type ApiMessage = {
   created_at: string;
 };
 
+export type ReportTargetType = "group" | "user" | "message";
+export type ReportReason =
+  | "illegal_content"
+  | "sexual_content"
+  | "harassment"
+  | "scam"
+  | "spam"
+  | "violence"
+  | "personal_info"
+  | "other";
+
+export type ApiReport = {
+  report_id: string;
+  target_type: ReportTargetType;
+  target_id: string;
+  reason: ReportReason;
+  description: string;
+  reporter_id: string;
+  reporter_name: string;
+  status: "pending" | "reviewed" | "dismissed";
+  created_at: string;
+};
+
+export type AdminReport = ApiReport & {
+  target_snapshot?: Record<string, any> | null;
+  target_exists: boolean;
+};
+
+export type AdminStats = {
+  pending: number;
+  reviewed: number;
+  dismissed: number;
+  users: number;
+  groups: number;
+};
+
+const ADMIN_SECRET_KEY = "@groupup/admin_secret";
+
+async function getAdminSecret(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(ADMIN_SECRET_KEY);
+  } catch {
+    return null;
+  }
+}
+
 async function getDeviceId(): Promise<string | null> {
   // auth.tsx exposes the current id synchronously via globalThis for perf.
   const cached = (globalThis as any).__GROUPUP_DEVICE_ID__;
@@ -84,12 +130,16 @@ async function getDeviceId(): Promise<string | null> {
 
 async function request<T>(
   path: string,
-  opts: { method?: string; body?: any; auth?: boolean } = {},
+  opts: { method?: string; body?: any; auth?: boolean; admin?: boolean } = {},
 ): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (opts.auth !== false) {
     const id = await getDeviceId();
     if (id) headers.Authorization = `Bearer ${id}`;
+  }
+  if (opts.admin) {
+    const secret = await getAdminSecret();
+    if (secret) headers["X-Admin-Secret"] = secret;
   }
   const res = await fetch(`${BASE}/api${path}`, {
     method: opts.method || "GET",
@@ -168,4 +218,61 @@ export const api = {
       method: "POST",
       body: { text },
     }),
+
+  // ---- Reports ----
+  submitReport: (payload: {
+    target_type: ReportTargetType;
+    target_id: string;
+    reason: ReportReason;
+    description?: string;
+  }) => request<ApiReport>("/reports", { method: "POST", body: payload }),
+  myReports: () => request<ApiReport[]>("/reports/mine"),
+
+  // ---- Admin ----
+  adminSetSecret: async (secret: string) => {
+    await AsyncStorage.setItem(ADMIN_SECRET_KEY, secret);
+  },
+  adminClearSecret: async () => {
+    await AsyncStorage.removeItem(ADMIN_SECRET_KEY);
+  },
+  adminHasSecret: async () => {
+    const s = await getAdminSecret();
+    return !!s;
+  },
+  adminVerify: () =>
+    request<{ ok: boolean }>("/admin/verify", { admin: true, auth: false }),
+  adminStats: () =>
+    request<AdminStats>("/admin/stats", { admin: true, auth: false }),
+  adminListReports: (status: "pending" | "reviewed" | "dismissed" | "all" = "pending") =>
+    request<AdminReport[]>(`/admin/reports?status=${status}`, {
+      admin: true,
+      auth: false,
+    }),
+  adminUpdateReport: (
+    report_id: string,
+    status: "pending" | "reviewed" | "dismissed",
+  ) =>
+    request<ApiReport>(`/admin/reports/${report_id}`, {
+      method: "PATCH",
+      body: { status },
+      admin: true,
+      auth: false,
+    }),
+  adminDeleteGroup: (group_id: string) =>
+    request<{ ok: boolean }>(`/admin/groups/${group_id}`, {
+      method: "DELETE",
+      admin: true,
+      auth: false,
+    }),
+  adminDeleteMessage: (message_id: string) =>
+    request<{ ok: boolean }>(`/admin/messages/${message_id}`, {
+      method: "DELETE",
+      admin: true,
+      auth: false,
+    }),
+  adminDeleteUser: (user_id: string) =>
+    request<{ ok: boolean; deleted_groups: string[] }>(
+      `/admin/users/${user_id}`,
+      { method: "DELETE", admin: true, auth: false },
+    ),
 };

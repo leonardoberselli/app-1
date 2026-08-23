@@ -22,6 +22,7 @@ import { api, ApiGroup, CitySuggestion } from "@/src/lib/api";
 import { findCategory, CUSTOM_CATEGORY } from "@/src/lib/categories";
 import { formatDate } from "@/src/lib/date";
 import { CityAutocomplete } from "@/src/components/CityAutocomplete";
+import { AdminUnlock } from "@/src/components/AdminUnlock";
 
 type Tab = "created" | "joined";
 
@@ -389,6 +390,8 @@ export default function ProfileScreen() {
           <Ionicons name="refresh" size={20} color="#0A0A0A" />
           <Text style={styles.logoutText}>Reimposta account</Text>
         </TouchableOpacity>
+
+        <AdminUnlock />
       </ScrollView>
     </SafeAreaView>
   );

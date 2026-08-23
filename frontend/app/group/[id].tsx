@@ -20,6 +20,12 @@ import { useAuth } from "@/src/contexts/auth";
 import { api, ApiGroup, ApiMessage } from "@/src/lib/api";
 import { findCategory, CUSTOM_CATEGORY } from "@/src/lib/categories";
 import { formatDate } from "@/src/lib/date";
+import { ReportSheet } from "@/src/components/ReportSheet";
+
+type ReportTarget =
+  | { type: "group"; id: string; label?: string }
+  | { type: "user"; id: string; label?: string }
+  | { type: "message"; id: string; label?: string };
 
 export default function GroupDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -35,6 +41,7 @@ export default function GroupDetail() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null);
   const flatRef = useRef<FlatList<ApiMessage>>(null);
 
   const loadGroup = useCallback(async () => {
@@ -166,7 +173,7 @@ export default function GroupDetail() {
           <Text style={styles.catPillEmoji}>{cat.emoji}</Text>
           <Text style={styles.catPillText}>{group.category_label}</Text>
         </View>
-        {isOwner && (
+        {isOwner ? (
           <TouchableOpacity
             testID="delete-group-button"
             onPress={handleDelete}
@@ -174,6 +181,20 @@ export default function GroupDetail() {
             style={[styles.iconBtn, { backgroundColor: "#FF4747" }]}
           >
             <Ionicons name="trash" size={18} color="#FFF" />
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            testID="report-group-button"
+            onPress={() =>
+              setReportTarget({
+                type: "group",
+                id: group.group_id,
+                label: group.title,
+              })
+            }
+            style={[styles.iconBtn, { backgroundColor: "#FFE600" }]}
+          >
+            <Ionicons name="flag" size={18} color="#0A0A0A" />
           </TouchableOpacity>
         )}
       </View>
@@ -301,8 +322,20 @@ export default function GroupDetail() {
                 onContentSizeChange={() => flatRef.current?.scrollToEnd({ animated: false })}
                 renderItem={({ item }) => {
                   const mine = item.user_id === user?.user_id;
+                  const openReport = () => {
+                    if (mine) return;
+                    setReportTarget({
+                      type: "message",
+                      id: item.message_id,
+                      label: `"${item.text.slice(0, 80)}${item.text.length > 80 ? "…" : ""}" — ${item.user_name}`,
+                    });
+                  };
                   return (
-                    <View
+                    <TouchableOpacity
+                      testID={`chat-message-${item.message_id}`}
+                      activeOpacity={0.9}
+                      onLongPress={openReport}
+                      delayLongPress={350}
                       style={[
                         styles.bubble,
                         mine ? styles.bubbleMine : styles.bubbleOther,
@@ -322,7 +355,12 @@ export default function GroupDetail() {
                       <Text style={[styles.bubbleText, mine && { color: "#FFFFFF" }]}>
                         {item.text}
                       </Text>
-                    </View>
+                      {!mine && (
+                        <Text style={styles.longPressHint}>
+                          Tieni premuto per segnalare
+                        </Text>
+                      )}
+                    </TouchableOpacity>
                   );
                 }}
                 ListEmptyComponent={
@@ -390,6 +428,16 @@ export default function GroupDetail() {
             </TouchableOpacity>
           )}
         </View>
+      )}
+
+      {reportTarget && (
+        <ReportSheet
+          visible
+          onClose={() => setReportTarget(null)}
+          targetType={reportTarget.type}
+          targetId={reportTarget.id}
+          targetLabel={reportTarget.label}
+        />
       )}
     </SafeAreaView>
   );
@@ -542,6 +590,12 @@ const styles = StyleSheet.create({
   bubbleOther: { backgroundColor: "#FFF", alignSelf: "flex-start" },
   bubbleAuthor: { fontSize: 11, fontWeight: "900", color: "#525252", marginBottom: 2 },
   bubbleText: { fontSize: 15, color: "#0A0A0A", fontWeight: "600" },
+  longPressHint: {
+    fontSize: 10,
+    color: "#8A8A8A",
+    fontStyle: "italic",
+    marginTop: 4,
+  },
   chatEmpty: { textAlign: "center", color: "#525252", marginTop: 40 },
   inputBar: {
     flexDirection: "row",

@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 13 — Reporting system + Admin/Moderation panel: FULLY VERIFIED. BACKEND (35/35 pytest, 100%): created /app/backend/tests/test_iteration13_reports_admin.py covering (a) POST /api/reports: 401 no-auth, 404 target-not-found (group + user), 422 invalid reason + invalid target_type, 200 happy path for group/user/message, 409 duplicate 'Hai già segnalato questo elemento', persistence via GET /api/reports/mine; (b) Admin auth: 401 no-header + 401 wrong secret + 200 with 'X-Admin-Secret: groupup-admin-2026' on both /admin/verify and /admin/stats; stats returns pending/reviewed/dismissed/users/groups counts as ints; (c) GET /api/admin/reports: filter status=pending/dismissed/all works, target_snapshot is populated for all three target_types (group snapshot: title/city/participants_count; user: name; message: text/group_id); (d) PATCH /api/admin/reports/{id}: 401/404/422 error paths + successful dismiss moves report between filter lists; (e) DELETE /api/admin/messages/{id}: 401/404 + cascade (message removed + related message-reports flipped to reviewed); (f) DELETE /api/admin/groups/{id}: 401/404 + cascade (group removed, ALL its messages removed, pending group-reports flipped to reviewed); (g) DELETE /api/admin/users/{id}: 401/400 (invalid id)/404 + full cascade proven end-to-end (owned groups removed with their chats, user pulled from other groups' participants, user's messages deleted everywhere, user profile deleted, pending user-reports marked reviewed). FRONTEND (Expo web at BASE_URL, viewport 390x844, seeded TESTUI13ALICE/TESTUI13BOB via PATCH /api/auth/me + localStorage @groupup/device_id): FA ✅ direct-nav /group/<id> as Bob → yellow flag [data-testid=report-group-button] visible (non-owner), tap opens [data-testid=report-sheet] with header 'Segnala il gruppo', spam chip clickable, description filled, [data-testid=report-submit] submits and closes the sheet. FB ✅ retry same report → inline error 'Hai già segnalato questo elemento' rendered in the sheet, sheet stays open (network 409 confirmed in console). FC ✅ /profile shows [data-testid=admin-unlock-btn] 'Sei il proprietario?' card, tap opens modal with [data-testid=admin-secret-input] — wrong secret 'wrong-secret-xxx' triggers 401 and Italian error 'segreto admin non valido'; correct secret 'groupup-admin-2026' navigates to [data-testid=admin-screen]. FD ✅ Admin dashboard shows the 4 stat pills (Aperte/Gestite/Ignorate/Gruppi/Utenti — screenshot confirms 1/0/0/3/62), filter chips row (Aperte/Gestite/Ignorate/Tutte), our previously-created group report card renders with 'Gruppo' pill + 'Spam' reason pill + 'PENDING' status + group snapshot (title 'TEST_ui13_grp_6f82f2', Basket · Milano, Autore Alice Owner, 2 partecipanti) + reporter note 'Nota di Bob Reporter: \"TEST_ui13 spam report\"' + three actions (Gestita / Ignora / Elimina). Tapping [data-testid=action-dismiss-<rep_id>] instantly hides the card from the Aperte filter (empty-state 'Nessuna segnalazione' shown afterwards) and Aperte count drops 1→0. Screenshots at /tmp/ui13_A..D.png. Pre-existing deprecation warnings persist (shadow* on cards, third-party props.pointerEvents) — cosmetic, unchanged from iteration_12.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "shadow* style props",
+        "issue": "Web console still logs '\"shadow*\" style props are deprecated. Use \"boxShadow\"'. Cosmetic only, pre-existing in cards/banners across the app. Reference: /app/frontend/app/(tabs)/index.tsx, /app/frontend/app/(tabs)/create.tsx, /app/frontend/app/admin.tsx (report card shadow)."
+      },
+      {
+        "component": "props.pointerEvents",
+        "issue": "Third-party libs (SafeAreaView / keyboard-controller) still emit 'props.pointerEvents is deprecated. Use style.pointerEvents'. Documented since iteration_8. Not actionable in app code."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration13_reports_admin.py",
+    "/app/test_reports/pytest/pytest_iter13.xml"
+  ],
+  "action_items": [
+    "None blocking. Reporting + admin panel are production-ready.",
+    "OPTIONAL: migrate remaining `shadow*` style props to `boxShadow` on web via Platform.OS check to silence deprecation warnings — currently reported on admin.tsx report card too."
+  ],
+  "critical_code_review_comments": [
+    "server.py: POST /api/reports correctly enforces (target_type, target_id, reporter_id) uniqueness via find_one before insert — clean 409 without needing a unique index. Dedupe key is (reporter_id, target_type, target_id) which is the expected UX (bob can't spam-report the same group but CAN report a group AND a user AND a message separately).",
+    "server.py: _target_exists is used before insert so 404 is returned when a nonexistent group/user/message is targeted — good defensive check.",
+    "server.py: require_admin correctly refuses when ADMIN_SECRET env var is empty (503) instead of silently allowing an empty-string match — good.",
+    "server.py: DELETE /api/admin/users cascades are done in the RIGHT ORDER: delete owned groups+their messages first, THEN pull user from remaining participant arrays, THEN delete user's messages anywhere, THEN delete user record, THEN mark pending user-reports reviewed. No orphans possible.",
+    "server.py: AdminReport model adds target_snapshot + target_exists — the admin UI never has to make extra round-trips.",
+    "ReportSheet.tsx uses testID on every interactive element (reason chips, description, submit, backdrop, close) — perfect for automated testing.",
+    "admin.tsx: dismiss/delete actions have data-testid=action-{dismiss,review,delete}-{report_id} — enables per-card automation.",
+    "AdminUnlock stores the admin secret client-side (implied by API helpers) — this is acceptable for a device-UUID MVP but note: any user with physical access to a device that has unlocked admin retains admin. If stronger control needed later, migrate to server-issued admin JWT with expiry."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration13_reports_admin.py (NEW — 35 tests, all pass)",
+    "/app/test_reports/pytest/pytest_iter13.xml (NEW — junit report)"
+  ],
+  "success_rate": {
+    "backend": "35/35 iteration-13 tests pass (100%)",
+    "frontend": "4/4 UI flows verified — report-group-button visibility, ReportSheet submit+duplicate-error, AdminUnlock wrong+correct secret, admin dashboard with dismiss action reflecting stats update"
+  },
+  "seed_data_creation": "Test-time only. TESTUI13ALICE_/TESTUI13BOB_ device UUIDs and TESTREP_* pytest devices are auto-created via PATCH /api/auth/me. Test data (TEST_rep_*, TEST_ui13_*) is cleaned up by the pytest module-scope teardown fixture in test_iteration13_reports_admin.py. UI test left one live report_id=rep_07737dd6bba0 in status='dismissed' + one active TESTUI13BOB participant in a TEST_ui13_grp_* group — main agent can leave these or purge via `db.reports.delete_many({\"target_id\": {\"$regex\": \"^grp_\"}, \"reporter_id\": {\"$regex\": \"^TESTUI13\"}})` and `db.groups.delete_many({\"title\": {\"$regex\": \"^TEST_ui13_\"}})`.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration-13 tests live in /app/backend/tests/test_iteration13_reports_admin.py. Run standalone: `pytest backend/tests/test_iteration13_reports_admin.py -v`. Note the test payload uses min_participants=3 (backend enforces ge=3); earlier backend_test.py uses 2 which is stale and would 422 today — pre-existing minor test-hygiene item, not tracked here as I already flagged similar hygiene in iteration_12 report. Admin secret is read from backend/.env ADMIN_SECRET=groupup-admin-2026; if it is rotated, tests will need updating (single constant at top of file). Frontend: yellow flag testID='report-group-button' (only visible when caller!=owner_id), red flag testID='report-user-button' (only when target_id!=self), long-press message uses testID='chat-message-<id>'. AdminUnlock testIDs: admin-unlock-btn / admin-secret-input / admin-secret-submit. Admin screen testIDs: admin-screen / admin-back / admin-logout / filter-{pending|reviewed|dismissed|all} / report-item-<id> / action-{review|dismiss|delete}-<id>. Duplicate-report UX shows inline red text in the sheet (NOT a native Alert) — Playwright can detect via page HTML lowercase contains 'già segnalato'.",
+  "rca_of_issue": "N/A — no bug found. Backend behaviour matches the spec for all 3 target types and all admin cascade rules; frontend integration is wired to backend correctly (yellow flag only for non-owners, red flag only for other-users, ReportSheet submit + duplicate error + admin unlock + dismiss + stats update all work end-to-end)."
+}

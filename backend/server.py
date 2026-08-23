@@ -118,6 +118,58 @@ class Message(BaseModel):
     created_at: datetime
 
 
+# ============================== Reports ==============================
+# User-generated reports against a group, another user's profile, or a
+# specific chat message. Persisted in the `reports` collection for later
+# review. When the same target accumulates too many reports we log a
+# warning; automatic take-down is out-of-scope for this MVP.
+
+REPORT_TARGET_TYPES = ("group", "user", "message")
+REPORT_REASONS = (
+    "illegal_content",
+    "sexual_content",
+    "harassment",
+    "scam",
+    "spam",
+    "violence",
+    "personal_info",
+    "other",
+)
+
+# Threshold at which we log a warning about a heavily-reported target.
+REPORT_ALERT_THRESHOLD = 3
+
+
+class ReportCreate(BaseModel):
+    """Payload for POST /api/reports."""
+
+    target_type: Literal["group", "user", "message"]
+    target_id: str = Field(min_length=1, max_length=128)
+    reason: Literal[
+        "illegal_content",
+        "sexual_content",
+        "harassment",
+        "scam",
+        "spam",
+        "violence",
+        "personal_info",
+        "other",
+    ]
+    description: Optional[str] = Field(default="", max_length=500)
+
+
+class Report(BaseModel):
+    report_id: str
+    target_type: str
+    target_id: str
+    reason: str
+    description: str
+    reporter_id: str
+    reporter_name: str
+    status: str  # "pending" | "reviewed" | "dismissed"
+    created_at: datetime
+
+
 # ============================== Helpers ==============================
 
 def _now():
@@ -852,6 +904,284 @@ async def geocode(city: str = Query(..., min_length=1, max_length=100), street: 
     if not coords:
         raise HTTPException(status_code=404, detail="Indirizzo non trovato")
     return {"lat": coords[0], "lon": coords[1]}
+
+
+# ============================== Reports ==============================
+
+async def _target_exists(target_type: str, target_id: str) -> bool:
+    """Return True if the reported entity actually exists in the DB."""
+    if target_type == "group":
+        return await db.groups.find_one({"group_id": target_id}, {"_id": 1}) is not None
+    if target_type == "user":
+        return await db.users.find_one({"user_id": target_id}, {"_id": 1}) is not None
+    if target_type == "message":
+        return await db.messages.find_one({"message_id": target_id}, {"_id": 1}) is not None
+    return False
+
+
+@api_router.post("/reports", response_model=Report)
+async def create_report(payload: ReportCreate, user: User = Depends(get_current_user)):
+    """Create a new user-submitted report. Rate-limits multiple reports of
+    the same target by the same user (only one per target per user)."""
+    if not await _target_exists(payload.target_type, payload.target_id):
+        raise HTTPException(status_code=404, detail="Elemento segnalato non trovato")
+
+    # A user cannot report the same target multiple times.
+    existing = await db.reports.find_one({
+        "reporter_id": user.user_id,
+        "target_type": payload.target_type,
+        "target_id": payload.target_id,
+    })
+    if existing:
+        raise HTTPException(status_code=409, detail="Hai già segnalato questo elemento")
+
+    report_id = f"rep_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "report_id": report_id,
+        "target_type": payload.target_type,
+        "target_id": payload.target_id,
+        "reason": payload.reason,
+        "description": (payload.description or "").strip()[:500],
+        "reporter_id": user.user_id,
+        "reporter_name": user.name or "Utente",
+        "status": "pending",
+        "created_at": _now(),
+    }
+    await db.reports.insert_one(dict(doc))
+
+    # Log if this target crosses the alert threshold — an operator can then
+    # act on it (out-of-scope for MVP auto take-down).
+    try:
+        count = await db.reports.count_documents({
+            "target_type": payload.target_type,
+            "target_id": payload.target_id,
+            "status": "pending",
+        })
+        if count >= REPORT_ALERT_THRESHOLD:
+            logger.warning(
+                "REPORT_ALERT target=%s id=%s pending=%d",
+                payload.target_type, payload.target_id, count,
+            )
+    except Exception:
+        pass
+
+    return Report(**doc)
+
+
+@api_router.get("/reports/mine", response_model=List[Report])
+async def my_reports(user: User = Depends(get_current_user)):
+    """List reports created by the currently authenticated user."""
+    cursor = db.reports.find(
+        {"reporter_id": user.user_id}, {"_id": 0}
+    ).sort("created_at", -1).limit(100)
+    items = await cursor.to_list(length=100)
+    return [Report(**i) for i in items]
+
+
+# ============================== Admin / Moderation ==============================
+# The app owner unlocks a hidden admin panel by entering the shared secret
+# (env var ADMIN_SECRET) once inside the app. The client then attaches this
+# secret as the `X-Admin-Secret` header on every admin call.
+
+_ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "").strip()
+
+
+class ReportStatusUpdate(BaseModel):
+    status: Literal["pending", "reviewed", "dismissed"]
+
+
+class AdminReport(Report):
+    """Report enriched with a snapshot of the reported target, so the
+    admin panel can display context without additional round-trips."""
+    target_snapshot: Optional[dict] = None
+    target_exists: bool = True
+
+
+async def require_admin(x_admin_secret: Optional[str] = Header(default=None)) -> bool:
+    if not _ADMIN_SECRET:
+        # Explicitly refuse admin access when server is misconfigured, rather
+        # than silently allowing an empty secret to match.
+        raise HTTPException(status_code=503, detail="Admin non configurato sul server")
+    if not x_admin_secret or x_admin_secret.strip() != _ADMIN_SECRET:
+        raise HTTPException(status_code=401, detail="Segreto admin non valido")
+    return True
+
+
+async def _load_target_snapshot(target_type: str, target_id: str) -> Tuple[Optional[dict], bool]:
+    """Fetch a compact snapshot of the reported entity for the admin UI."""
+    if target_type == "group":
+        g = await db.groups.find_one({"group_id": target_id}, {"_id": 0})
+        if not g:
+            return None, False
+        return {
+            "title": g.get("title"),
+            "category_label": g.get("category_label"),
+            "city": g.get("city"),
+            "province": g.get("province"),
+            "owner_id": g.get("owner_id"),
+            "owner_name": g.get("owner_name"),
+            "date": g.get("date"),
+            "time": g.get("time"),
+            "description": g.get("description"),
+            "participants_count": len(g.get("participants") or []),
+        }, True
+    if target_type == "user":
+        u = await db.users.find_one({"user_id": target_id}, {"_id": 0})
+        if not u:
+            return None, False
+        return {
+            "name": u.get("name"),
+            "picture": u.get("picture"),
+            "gender": u.get("gender"),
+            "age": u.get("age"),
+        }, True
+    if target_type == "message":
+        m = await db.messages.find_one({"message_id": target_id}, {"_id": 0})
+        if not m:
+            return None, False
+        # also pull group title for context
+        g_title = None
+        g = await db.groups.find_one({"group_id": m.get("group_id")}, {"_id": 0, "title": 1})
+        if g:
+            g_title = g.get("title")
+        return {
+            "text": m.get("text"),
+            "user_id": m.get("user_id"),
+            "user_name": m.get("user_name"),
+            "group_id": m.get("group_id"),
+            "group_title": g_title,
+        }, True
+    return None, False
+
+
+@api_router.get("/admin/verify")
+async def admin_verify(_ok: bool = Depends(require_admin)):
+    """Cheap endpoint used by the client to check whether the stored secret
+    is still valid, before showing the admin panel."""
+    return {"ok": True}
+
+
+@api_router.get("/admin/reports", response_model=List[AdminReport])
+async def admin_list_reports(
+    status: str = Query(default="pending"),
+    _ok: bool = Depends(require_admin),
+):
+    query: dict = {}
+    if status and status != "all":
+        query["status"] = status
+    cursor = db.reports.find(query, {"_id": 0}).sort("created_at", -1).limit(500)
+    items = await cursor.to_list(length=500)
+    out: List[AdminReport] = []
+    for i in items:
+        snap, exists = await _load_target_snapshot(i["target_type"], i["target_id"])
+        out.append(AdminReport(
+            **i,
+            target_snapshot=snap,
+            target_exists=exists,
+        ))
+    return out
+
+
+@api_router.get("/admin/stats")
+async def admin_stats(_ok: bool = Depends(require_admin)):
+    """High-level counts used to power the admin dashboard header."""
+    pending = await db.reports.count_documents({"status": "pending"})
+    reviewed = await db.reports.count_documents({"status": "reviewed"})
+    dismissed = await db.reports.count_documents({"status": "dismissed"})
+    total_users = await db.users.count_documents({})
+    total_groups = await db.groups.count_documents({})
+    return {
+        "pending": pending,
+        "reviewed": reviewed,
+        "dismissed": dismissed,
+        "users": total_users,
+        "groups": total_groups,
+    }
+
+
+@api_router.patch("/admin/reports/{report_id}", response_model=Report)
+async def admin_update_report(
+    report_id: str,
+    payload: ReportStatusUpdate,
+    _ok: bool = Depends(require_admin),
+):
+    r = await db.reports.find_one({"report_id": report_id}, {"_id": 0})
+    if not r:
+        raise HTTPException(status_code=404, detail="Segnalazione non trovata")
+    await db.reports.update_one(
+        {"report_id": report_id}, {"$set": {"status": payload.status}}
+    )
+    r["status"] = payload.status
+    return Report(**r)
+
+
+@api_router.delete("/admin/groups/{group_id}")
+async def admin_delete_group(group_id: str, _ok: bool = Depends(require_admin)):
+    g = await db.groups.find_one({"group_id": group_id}, {"_id": 0})
+    if not g:
+        raise HTTPException(status_code=404, detail="Gruppo non trovato")
+    await db.groups.delete_one({"group_id": group_id})
+    await db.messages.delete_many({"group_id": group_id})
+    # Mark related reports as reviewed
+    await db.reports.update_many(
+        {"target_type": "group", "target_id": group_id, "status": "pending"},
+        {"$set": {"status": "reviewed"}},
+    )
+    return {"ok": True, "deleted_group": group_id}
+
+
+@api_router.delete("/admin/messages/{message_id}")
+async def admin_delete_message(message_id: str, _ok: bool = Depends(require_admin)):
+    m = await db.messages.find_one({"message_id": message_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Messaggio non trovato")
+    await db.messages.delete_one({"message_id": message_id})
+    await db.reports.update_many(
+        {"target_type": "message", "target_id": message_id, "status": "pending"},
+        {"$set": {"status": "reviewed"}},
+    )
+    return {"ok": True, "deleted_message": message_id}
+
+
+@api_router.delete("/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, _ok: bool = Depends(require_admin)):
+    """Ban a user: remove their account, their created groups (with chat),
+    their participation in other groups, and all their messages. Related
+    reports are marked reviewed."""
+    if not _DEVICE_ID_RE.match(user_id):
+        raise HTTPException(status_code=400, detail="user_id non valido")
+    u = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+
+    # Delete groups owned by the user + their chats
+    owned = await db.groups.find(
+        {"owner_id": user_id}, {"_id": 0, "group_id": 1}
+    ).to_list(length=1000)
+    owned_ids = [g["group_id"] for g in owned]
+    if owned_ids:
+        await db.groups.delete_many({"group_id": {"$in": owned_ids}})
+        await db.messages.delete_many({"group_id": {"$in": owned_ids}})
+
+    # Remove the user from any remaining participant list
+    await db.groups.update_many(
+        {"participants.user_id": user_id},
+        {"$pull": {"participants": {"user_id": user_id}}},
+    )
+    # Delete the user's messages everywhere
+    await db.messages.delete_many({"user_id": user_id})
+    # Finally, delete the user profile itself
+    await db.users.delete_one({"user_id": user_id})
+    # Mark related reports as reviewed
+    await db.reports.update_many(
+        {"target_type": "user", "target_id": user_id, "status": "pending"},
+        {"$set": {"status": "reviewed"}},
+    )
+    return {
+        "ok": True,
+        "deleted_user": user_id,
+        "deleted_groups": owned_ids,
+    }
 
 
 # ============================== Health ==============================
