@@ -16,7 +16,8 @@ export const CATEGORIES: CategoryDef[] = [
   { id: "bar", label: "Bar", emoji: "🍻", color: "#F59E0B" },
   { id: "volley", label: "Volley", emoji: "🏐", color: "#EF4444" },
   { id: "padel", label: "Padel", emoji: "🥎", color: "#22D3EE" },
-  { id: "running", label: "Running", emoji: "🏃", color: "#10B981" },
+  { id: "bowling", label: "Bowling", emoji: "🎳", color: "#EC4899" },
+  { id: "cinema", label: "Cinema", emoji: "🎬", color: "#6366F1" },
   { id: "viaggi", label: "Viaggi", emoji: "✈️", color: "#0EA5E9" },
   { id: "altro", label: "Altro", emoji: "🎲", color: "#8B5CF6" },
 ];
