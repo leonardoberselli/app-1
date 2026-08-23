@@ -85,7 +85,7 @@ export default function CreateScreen() {
   const [customDateText, setCustomDateText] = useState("");
   const [dateError, setDateError] = useState<string | null>(null);
   const [time, setTime] = useState("18:00");
-  const [minPart, setMinPart] = useState("2");
+  const [minPart, setMinPart] = useState("3");
   const [maxPart, setMaxPart] = useState("8");
   const [minAge, setMinAge] = useState("18");
   const [maxAge, setMaxAge] = useState("40");
@@ -104,7 +104,7 @@ export default function CreateScreen() {
     setProvince("");
     setCityCoords(null);
     setDescription("");
-    setMinPart("2");
+    setMinPart("3");
     setMaxPart("8");
     setMinAge("18");
     setMaxAge("40");
@@ -136,8 +136,10 @@ export default function CreateScreen() {
     const maxP = parseInt(maxPart, 10);
     const minA = parseInt(minAge, 10);
     const maxA = parseInt(maxAge, 10);
-    if (isNaN(minP) || isNaN(maxP) || minP < 1 || maxP < minP)
+    if (isNaN(minP) || isNaN(maxP) || maxP < minP)
       return setError("Numero partecipanti non valido");
+    if (minP < 3) return setError("Il numero minimo di partecipanti è 3");
+    if (maxP < 3) return setError("Il numero massimo di partecipanti è 3");
     if (isNaN(minA) || isNaN(maxA) || minA < 0 || maxA < minA)
       return setError("Età non valida");
     if (!deviceId || !user?.name) return setError("Completa il profilo prima di creare");
@@ -354,6 +356,7 @@ export default function CreateScreen() {
         </ScrollView>
 
         <Text style={styles.label}>PARTECIPANTI</Text>
+        <Text style={styles.hint}>Minimo 3 persone per gruppo</Text>
         <View style={styles.row}>
           <View style={styles.halfBox}>
             <Text style={styles.smallLabel}>Min</Text>
@@ -364,6 +367,8 @@ export default function CreateScreen() {
               value={minPart}
               onChangeText={setMinPart}
               maxLength={3}
+              placeholder="3"
+              placeholderTextColor="#9A9A9A"
             />
           </View>
           <View style={styles.halfBox}>
@@ -375,6 +380,8 @@ export default function CreateScreen() {
               value={maxPart}
               onChangeText={setMaxPart}
               maxLength={3}
+              placeholder="8"
+              placeholderTextColor="#9A9A9A"
             />
           </View>
         </View>
@@ -457,6 +464,13 @@ const styles = StyleSheet.create({
     color: "#10B981",
     fontSize: 12,
     letterSpacing: 0.3,
+  },
+  hint: {
+    fontSize: 12,
+    color: "#525252",
+    fontWeight: "600",
+    marginTop: -6,
+    marginBottom: 6,
   },
   headerBlock: {
     paddingHorizontal: 20,

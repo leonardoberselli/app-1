@@ -380,3 +380,63 @@ agent_communication:
         GET /api/cities/suggest?q=milan -> [{name, province, region, lat, lon, display}]
         POST /api/groups accetta {city, province?, lat?, lon?} (no street)
       Test manuale via curl e UI OK.
+
+# ============================== Iteration 13 ==============================
+
+user_problem_statement: |
+  Quando si crea un gruppo il numero minimo di partecipanti deve essere
+  almeno 3.
+
+backend:
+  - task: "Vincolo min_participants>=3 sul POST /api/groups"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Aggiornato GroupCreate: min_participants Field(ge=3, le=200) e
+          max_participants Field(ge=3, le=200). Test manuale: payload con
+          min=2 -> 422 (Unprocessable Entity, Pydantic). min=3 -> 200.
+
+frontend:
+  - task: "Default min=3 + validazione client + hint UI"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/create.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Default minPart="3" (era "2"). reset() usa "3". Validazione:
+          minP<3 -> "Il numero minimo di partecipanti è 3", maxP<3 ->
+          "Il numero massimo di partecipanti è 3". Nuovo hint sotto la
+          label "Minimo 3 persone per gruppo". Placeholder Min="3" e
+          Max="8" sui campi numerici.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.3"
+  test_sequence: 13
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "Vincolo min_participants>=3 sul POST /api/groups"
+    - "Default min=3 + validazione client + hint UI"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Iterazione 13 (micro-feature): min 3 partecipanti per creare un gruppo.
+      Backend: Field(ge=3). Frontend: default 3, validazione client, hint UI.

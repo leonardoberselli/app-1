@@ -74,8 +74,8 @@ class GroupCreate(BaseModel):
     description: Optional[str] = ""
     date: str
     time: str
-    min_participants: int = Field(ge=1, le=200)
-    max_participants: int = Field(ge=1, le=200)
+    min_participants: int = Field(ge=3, le=200)
+    max_participants: int = Field(ge=3, le=200)
     min_age: int = Field(ge=0, le=120)
     max_age: int = Field(ge=0, le=120)
 
