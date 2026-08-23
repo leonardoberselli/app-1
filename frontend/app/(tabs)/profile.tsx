@@ -391,6 +391,53 @@ export default function ProfileScreen() {
           <Text style={styles.logoutText}>Reimposta account</Text>
         </TouchableOpacity>
 
+        <TouchableOpacity
+          testID="delete-account-button"
+          activeOpacity={0.85}
+          onPress={() => {
+            Alert.alert(
+              "Eliminare l'account?",
+              "Questa azione è irreversibile. Verranno eliminati definitivamente:\n\n• Il tuo profilo\n• Tutti i gruppi che hai creato (con le relative chat)\n• I tuoi messaggi\n• Le tue segnalazioni\n\nContinuare?",
+              [
+                { text: "Annulla", style: "cancel" },
+                {
+                  text: "Elimina",
+                  style: "destructive",
+                  onPress: () => {
+                    Alert.alert(
+                      "Sei sicuro?",
+                      "Ultima conferma: i dati eliminati non potranno essere recuperati.",
+                      [
+                        { text: "Annulla", style: "cancel" },
+                        {
+                          text: "Sì, elimina definitivamente",
+                          style: "destructive",
+                          onPress: async () => {
+                            try {
+                              await api.deleteAccount();
+                              await signOut();
+                              router.replace("/");
+                            } catch (e: any) {
+                              Alert.alert(
+                                "Errore",
+                                e?.message || "Impossibile eliminare l'account",
+                              );
+                            }
+                          },
+                        },
+                      ],
+                    );
+                  },
+                },
+              ],
+            );
+          }}
+          style={styles.deleteAccount}
+        >
+          <Ionicons name="trash" size={20} color="#FFE600" />
+          <Text style={styles.deleteAccountText}>Elimina account</Text>
+        </TouchableOpacity>
+
         <AdminUnlock />
       </ScrollView>
     </SafeAreaView>
@@ -500,6 +547,29 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   logoutText: { fontWeight: "900", color: "#0A0A0A", textTransform: "uppercase", letterSpacing: 1 },
+  deleteAccount: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#0A0A0A",
+    borderWidth: 2,
+    borderColor: "#000",
+    borderRadius: 999,
+    paddingVertical: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 4, height: 4 },
+    shadowOpacity: 1,
+    shadowRadius: 0,
+    elevation: 4,
+  },
+  deleteAccountText: {
+    fontWeight: "900",
+    color: "#FFE600",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
   section: {
     marginTop: 20,
     backgroundColor: "#FFFFFF",

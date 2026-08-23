@@ -620,6 +620,46 @@ async def auth_update_me(payload: ProfileUpdate, user: User = Depends(get_curren
     return _user_from_doc(fresh)
 
 
+async def _delete_user_cascade(user_id: str) -> dict:
+    """Wipe every trace of a user: their profile, groups they own (with
+    chats), their messages everywhere, and their participation in other
+    groups. Reports SENT by the user are also removed. Any pending report
+    ABOUT the user is marked reviewed. Returns a small summary dict.
+    """
+    # Groups owned by user + their chats
+    owned = await db.groups.find(
+        {"owner_id": user_id}, {"_id": 0, "group_id": 1}
+    ).to_list(length=1000)
+    owned_ids = [g["group_id"] for g in owned]
+    if owned_ids:
+        await db.groups.delete_many({"group_id": {"$in": owned_ids}})
+        await db.messages.delete_many({"group_id": {"$in": owned_ids}})
+    # Remove user from any remaining participant list
+    await db.groups.update_many(
+        {"participants.user_id": user_id},
+        {"$pull": {"participants": {"user_id": user_id}}},
+    )
+    # Delete the user's messages everywhere
+    await db.messages.delete_many({"user_id": user_id})
+    # Delete reports authored by the user (privacy)
+    await db.reports.delete_many({"reporter_id": user_id})
+    # Mark pending reports ABOUT this user as reviewed
+    await db.reports.update_many(
+        {"target_type": "user", "target_id": user_id, "status": "pending"},
+        {"$set": {"status": "reviewed"}},
+    )
+    # Finally, drop the user record itself
+    await db.users.delete_one({"user_id": user_id})
+    return {"ok": True, "deleted_user": user_id, "deleted_groups": owned_ids}
+
+
+@api_router.delete("/auth/me")
+async def delete_my_account(user: User = Depends(get_current_user)):
+    """Self-service account deletion. Removes ALL data belonging to the
+    caller from the database. Irreversible."""
+    return await _delete_user_cascade(user.user_id)
+
+
 # ============================== Public users ==============================
 
 @api_router.get("/users/{target_id}", response_model=PublicUser)
@@ -1153,35 +1193,7 @@ async def admin_delete_user(user_id: str, _ok: bool = Depends(require_admin)):
     u = await db.users.find_one({"user_id": user_id}, {"_id": 0})
     if not u:
         raise HTTPException(status_code=404, detail="Utente non trovato")
-
-    # Delete groups owned by the user + their chats
-    owned = await db.groups.find(
-        {"owner_id": user_id}, {"_id": 0, "group_id": 1}
-    ).to_list(length=1000)
-    owned_ids = [g["group_id"] for g in owned]
-    if owned_ids:
-        await db.groups.delete_many({"group_id": {"$in": owned_ids}})
-        await db.messages.delete_many({"group_id": {"$in": owned_ids}})
-
-    # Remove the user from any remaining participant list
-    await db.groups.update_many(
-        {"participants.user_id": user_id},
-        {"$pull": {"participants": {"user_id": user_id}}},
-    )
-    # Delete the user's messages everywhere
-    await db.messages.delete_many({"user_id": user_id})
-    # Finally, delete the user profile itself
-    await db.users.delete_one({"user_id": user_id})
-    # Mark related reports as reviewed
-    await db.reports.update_many(
-        {"target_type": "user", "target_id": user_id, "status": "pending"},
-        {"$set": {"status": "reviewed"}},
-    )
-    return {
-        "ok": True,
-        "deleted_user": user_id,
-        "deleted_groups": owned_ids,
-    }
+    return await _delete_user_cascade(user_id)
 
 
 # ============================== Health ==============================

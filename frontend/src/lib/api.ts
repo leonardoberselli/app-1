@@ -164,6 +164,10 @@ export const api = {
     gender?: string;
     age?: number;
   }) => request<ApiUser>("/auth/me", { method: "PATCH", body: payload }),
+  deleteAccount: () =>
+    request<{ ok: boolean; deleted_groups: string[] }>("/auth/me", {
+      method: "DELETE",
+    }),
   getUser: (id: string) => request<PublicUser>(`/users/${id}`),
 
   // ---- Groups ----
