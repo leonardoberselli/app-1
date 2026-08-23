@@ -440,3 +440,39 @@ agent_communication:
     message: |
       Iterazione 13 (micro-feature): min 3 partecipanti per creare un gruppo.
       Backend: Field(ge=3). Frontend: default 3, validazione client, hint UI.
+
+# ============================== Iteration 14 ==============================
+
+user_problem_statement: |
+  In ogni gruppo, mostrare in alto una scritta che ricordi di ritrovarsi
+  sempre in luoghi pubblici, affollati e ben illuminati.
+
+frontend:
+  - task: "Safety banner in alto sul detail del gruppo"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/group/[id].tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Banner giallo con bordo nero e icona shield-checkmark posizionato
+          tra header (categoria/torna) e il segmented control Info/Chat.
+          Testo: "Per la tua sicurezza, ritrovatevi sempre in luoghi
+          pubblici, affollati e ben illuminati." Sempre visibile in
+          entrambi i tab. testID="safety-banner". Verificato via screenshot.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.4"
+  test_sequence: 14
+  run_ui: true
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Iterazione 14: aggiunto safety banner nel group detail. Solo UI, no
+      backend changes.

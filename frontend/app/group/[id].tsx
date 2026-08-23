@@ -178,6 +178,13 @@ export default function GroupDetail() {
         )}
       </View>
 
+      <View style={styles.safetyBanner} testID="safety-banner">
+        <Ionicons name="shield-checkmark" size={18} color="#0A0A0A" />
+        <Text style={styles.safetyText}>
+          Per la tua sicurezza, ritrovatevi sempre in luoghi pubblici, affollati e ben illuminati.
+        </Text>
+      </View>
+
       <View style={styles.segment}>
         <TouchableOpacity
           testID="seg-info"
@@ -429,6 +436,31 @@ const styles = StyleSheet.create({
   },
   catPillEmoji: { fontSize: 14 },
   catPillText: { fontWeight: "900", color: "#0A0A0A", letterSpacing: 0.5, textTransform: "uppercase" },
+  safetyBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginHorizontal: 16,
+    marginBottom: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: "#FFE600",
+    borderWidth: 2,
+    borderColor: "#0A0A0A",
+    borderRadius: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 3, height: 3 },
+    shadowOpacity: 1,
+    shadowRadius: 0,
+    elevation: 3,
+  },
+  safetyText: {
+    flex: 1,
+    fontWeight: "800",
+    color: "#0A0A0A",
+    fontSize: 13,
+    lineHeight: 17,
+  },
   segment: {
     flexDirection: "row",
     margin: 16,
