@@ -9,12 +9,17 @@ import {
   RefreshControl,
   Image,
   ActivityIndicator,
+  Modal,
+  TextInput,
+  Linking,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useAuth } from "@/src/contexts/auth";
+import { useLocationPrefs } from "@/src/contexts/location";
 import { api, ApiGroup } from "@/src/lib/api";
 import { CATEGORIES, CUSTOM_CATEGORY, findCategory } from "@/src/lib/categories";
 import { formatDate } from "@/src/lib/date";
@@ -23,15 +28,33 @@ const ALL_FILTER = { id: "all", label: "Tutti", emoji: "✨", color: "#0A0A0A" }
 
 export default function HomeScreen() {
   const { user } = useAuth();
+  const {
+    prefs,
+    permission,
+    canAskAgain,
+    requestGps,
+    setManualLocation,
+  } = useLocationPrefs();
   const router = useRouter();
   const [groups, setGroups] = useState<ApiGroup[]>([]);
   const [category, setCategory] = useState<string>("all");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [manualCity, setManualCity] = useState("");
+  const [promptStep, setPromptStep] = useState<"choose" | "manual">("choose");
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [manualBusy, setManualBusy] = useState(false);
+
+  const hasCoords = prefs.lat != null && prefs.lon != null;
+  const geoFilter =
+    hasCoords && prefs.radiusKm > 0
+      ? { lat: prefs.lat as number, lon: prefs.lon as number, radiusKm: prefs.radiusKm }
+      : null;
 
   const load = useCallback(async () => {
     try {
-      const list = await api.listGroups(category);
+      const list = await api.listGroups(category, undefined, geoFilter);
       setGroups(list);
     } catch (e) {
       console.warn("listGroups", e);
@@ -39,7 +62,8 @@ export default function HomeScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [category]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [category, geoFilter?.lat, geoFilter?.lon, geoFilter?.radiusKm]);
 
   useEffect(() => {
     setLoading(true);
@@ -51,6 +75,55 @@ export default function HomeScreen() {
       load();
     }, [load]),
   );
+
+  // First-launch permission prompt: show it once when the user has no
+  // location set and hasn't been asked yet.
+  useEffect(() => {
+    if (!user) return;
+    if (prefs.askedOnce) return;
+    if (hasCoords) return;
+    setPromptStep("choose");
+    setPromptOpen(true);
+  }, [user, prefs.askedOnce, hasCoords]);
+
+  const onGrantGps = async () => {
+    if (permission !== "granted" && !canAskAgain) {
+      // OS won't ask again -> guide user to settings
+      Alert.alert(
+        "Permessi negati",
+        "Attiva la posizione dalle impostazioni di sistema, oppure inserisci una città di riferimento.",
+        [
+          { text: "Impostazioni", onPress: () => Linking.openSettings() },
+          { text: "Città manuale", onPress: () => setPromptStep("manual") },
+          { text: "Chiudi", style: "cancel" },
+        ],
+      );
+      return;
+    }
+    const ok = await requestGps();
+    if (ok) {
+      setPromptOpen(false);
+    } else {
+      setPromptStep("manual");
+    }
+  };
+
+  const submitManual = async () => {
+    if (!manualCity.trim()) {
+      setManualError("Inserisci una città");
+      return;
+    }
+    setManualBusy(true);
+    setManualError(null);
+    const res = await setManualLocation(manualCity.trim());
+    setManualBusy(false);
+    if (!res.ok) {
+      setManualError(res.error || "Città non trovata");
+      return;
+    }
+    setPromptOpen(false);
+    setManualCity("");
+  };
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -172,6 +245,25 @@ export default function HomeScreen() {
             );
           })}
         </ScrollView>
+
+        <TouchableOpacity
+          testID="distance-banner"
+          activeOpacity={0.85}
+          onPress={() => router.push("/(tabs)/profile")}
+          style={styles.distanceBanner}
+        >
+          <Ionicons
+            name={hasCoords ? "locate" : "location-outline"}
+            size={16}
+            color="#0A0A0A"
+          />
+          <Text style={styles.distanceBannerText} numberOfLines={1}>
+            {hasCoords
+              ? `Entro ${prefs.radiusKm} km${prefs.source === "manual" && prefs.manualCity ? ` da ${prefs.manualCity}` : " da te"}`
+              : "Attiva la posizione per filtrare per distanza"}
+          </Text>
+          <Ionicons name="chevron-forward" size={16} color="#0A0A0A" />
+        </TouchableOpacity>
       </View>
 
       {loading ? (
@@ -193,12 +285,107 @@ export default function HomeScreen() {
               <Text style={styles.emptyEmoji}>🎯</Text>
               <Text style={styles.emptyTitle}>Nessun gruppo</Text>
               <Text style={styles.emptySub}>
-                Sii il primo a crearne uno! Tocca &quot;Crea&quot; per iniziare.
+                {hasCoords
+                  ? `Nessun gruppo entro ${prefs.radiusKm} km. Aumenta la distanza dal profilo o crea tu il primo!`
+                  : "Sii il primo a crearne uno! Tocca \"Crea\" per iniziare."}
               </Text>
             </View>
           }
         />
       )}
+
+      <Modal
+        visible={promptOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPromptOpen(false)}
+      >
+        <View style={styles.backdrop}>
+          <View style={styles.sheet} testID="location-prompt">
+            <Text style={styles.sheetEmoji}>📍</Text>
+            <Text style={styles.sheetTitle}>Trova gruppi vicino a te</Text>
+            <Text style={styles.sheetSub}>
+              {promptStep === "choose"
+                ? "Ci serve la tua posizione per mostrarti solo i gruppi entro pochi km. Puoi anche scegliere una città di riferimento."
+                : "Inserisci la città da cui vuoi vedere i gruppi (potrai cambiarla dal profilo)."}
+            </Text>
+
+            {promptStep === "choose" ? (
+              <>
+                <TouchableOpacity
+                  testID="location-grant-btn"
+                  activeOpacity={0.85}
+                  onPress={onGrantGps}
+                  style={styles.primaryBtn}
+                >
+                  <Ionicons name="locate" size={18} color="#0A0A0A" />
+                  <Text style={styles.primaryBtnText}>Usa la mia posizione</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  testID="location-manual-btn"
+                  activeOpacity={0.85}
+                  onPress={() => setPromptStep("manual")}
+                  style={styles.secondaryBtn}
+                >
+                  <Ionicons name="location-outline" size={18} color="#0A0A0A" />
+                  <Text style={styles.secondaryBtnText}>Inserisci una città</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => setPromptOpen(false)}
+                  style={styles.skipBtn}
+                >
+                  <Text style={styles.skipBtnText}>Salta, mostra tutti</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <TextInput
+                  testID="location-manual-city"
+                  style={styles.manualInput}
+                  value={manualCity}
+                  onChangeText={setManualCity}
+                  placeholder="Es. Milano"
+                  placeholderTextColor="#9A9A9A"
+                  autoCapitalize="words"
+                  autoFocus
+                />
+                {manualError ? (
+                  <Text testID="location-manual-error" style={styles.manualError}>
+                    {manualError}
+                  </Text>
+                ) : null}
+
+                <TouchableOpacity
+                  testID="location-manual-submit"
+                  activeOpacity={0.85}
+                  onPress={submitManual}
+                  disabled={manualBusy}
+                  style={[styles.primaryBtn, manualBusy && { opacity: 0.6 }]}
+                >
+                  {manualBusy ? (
+                    <ActivityIndicator color="#0A0A0A" />
+                  ) : (
+                    <>
+                      <Ionicons name="checkmark" size={18} color="#0A0A0A" />
+                      <Text style={styles.primaryBtnText}>Conferma</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => setPromptStep("choose")}
+                  style={styles.skipBtn}
+                >
+                  <Text style={styles.skipBtnText}>Indietro</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -316,4 +503,108 @@ const styles = StyleSheet.create({
   emptyEmoji: { fontSize: 48 },
   emptyTitle: { fontSize: 22, fontWeight: "900", color: "#0A0A0A" },
   emptySub: { color: "#525252", fontSize: 14, textAlign: "center", paddingHorizontal: 40 },
+  distanceBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 4,
+    backgroundColor: "#FFE600",
+    borderWidth: 2,
+    borderColor: "#000",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  distanceBannerText: {
+    flex: 1,
+    fontWeight: "800",
+    color: "#0A0A0A",
+    fontSize: 13,
+  },
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  sheet: {
+    backgroundColor: "#FDFBF7",
+    borderTopWidth: 2,
+    borderColor: "#000",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: 36,
+    gap: 12,
+    alignItems: "center",
+  },
+  sheetEmoji: { fontSize: 48 },
+  sheetTitle: {
+    fontSize: 22,
+    fontWeight: "900",
+    color: "#0A0A0A",
+    textAlign: "center",
+  },
+  sheetSub: {
+    fontSize: 14,
+    color: "#525252",
+    textAlign: "center",
+    fontWeight: "600",
+    marginBottom: 8,
+  },
+  primaryBtn: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#FFE600",
+    borderWidth: 2,
+    borderColor: "#000",
+    borderRadius: 999,
+    paddingVertical: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 3, height: 3 },
+    shadowOpacity: 1,
+    shadowRadius: 0,
+    elevation: 3,
+  },
+  primaryBtnText: {
+    fontWeight: "900",
+    color: "#0A0A0A",
+    fontSize: 15,
+    letterSpacing: 0.5,
+  },
+  secondaryBtn: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#FFF",
+    borderWidth: 2,
+    borderColor: "#000",
+    borderRadius: 999,
+    paddingVertical: 14,
+  },
+  secondaryBtnText: {
+    fontWeight: "900",
+    color: "#0A0A0A",
+    fontSize: 14,
+  },
+  skipBtn: { paddingVertical: 8 },
+  skipBtnText: { color: "#525252", fontWeight: "700", textDecorationLine: "underline" },
+  manualInput: {
+    width: "100%",
+    backgroundColor: "#FFF",
+    borderWidth: 2,
+    borderColor: "#0A0A0A",
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    fontSize: 16,
+    color: "#0A0A0A",
+    fontWeight: "600",
+  },
+  manualError: { color: "#FF4747", fontWeight: "800", textAlign: "center" },
 });

@@ -13,7 +13,8 @@
       "bundleIdentifier": "com.leonardo.groupup",
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Scegli una foto per il tuo profilo",
-        "NSCameraUsageDescription": "Scatta una foto per il tuo profilo"
+        "NSCameraUsageDescription": "Scatta una foto per il tuo profilo",
+        "NSLocationWhenInUseUsageDescription": "Mostra gruppi vicino a te"
       }
     },
     "android": {
@@ -24,7 +25,9 @@
       "edgeToEdgeEnabled": true,
       "package": "com.leonardo.groupup",
       "permissions": [
-        "READ_MEDIA_IMAGES"
+        "READ_MEDIA_IMAGES",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
       ]
     },
     "web": {
@@ -48,6 +51,12 @@
         {
           "photosPermission": "Scegli una foto per il tuo profilo",
           "cameraPermission": "Scatta una foto per il tuo profilo"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Mostra gruppi vicino a te"
         }
       ],
       "expo-font",

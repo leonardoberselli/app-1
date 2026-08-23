@@ -34,6 +34,10 @@ export type ApiGroup = {
   category: string;
   category_label: string;
   location: string;
+  city?: string | null;
+  street?: string | null;
+  lat?: number | null;
+  lon?: number | null;
   description: string;
   date: string;
   time: string;
@@ -104,10 +108,19 @@ export const api = {
   getUser: (id: string) => request<PublicUser>(`/users/${id}`),
 
   // ---- Groups ----
-  listGroups: (category?: string, q?: string) => {
+  listGroups: (
+    category?: string,
+    q?: string,
+    geo?: { lat: number; lon: number; radiusKm: number } | null,
+  ) => {
     const qs = new URLSearchParams();
     if (category && category !== "all") qs.append("category", category);
     if (q) qs.append("q", q);
+    if (geo && Number.isFinite(geo.lat) && Number.isFinite(geo.lon) && geo.radiusKm > 0) {
+      qs.append("lat", String(geo.lat));
+      qs.append("lon", String(geo.lon));
+      qs.append("radius_km", String(geo.radiusKm));
+    }
     const str = qs.toString();
     return request<ApiGroup[]>(`/groups${str ? `?${str}` : ""}`, { auth: false });
   },
@@ -123,6 +136,15 @@ export const api = {
     request<{ ok: boolean }>(`/groups/${id}`, { method: "DELETE" }),
   myGroups: () =>
     request<{ created: ApiGroup[]; joined: ApiGroup[] }>("/groups/mine"),
+
+  // ---- Geocoding ----
+  geocode: (city: string, street: string = "") => {
+    const qs = new URLSearchParams({ city });
+    if (street) qs.append("street", street);
+    return request<{ lat: number; lon: number }>(`/geocode?${qs.toString()}`, {
+      auth: false,
+    });
+  },
 
   // ---- Chat ----
   getMessages: (id: string) => request<ApiMessage[]>(`/groups/${id}/messages`),

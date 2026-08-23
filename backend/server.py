@@ -1,15 +1,17 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import re
+import math
 import asyncio
 import logging
 import uuid
+import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Tuple
 from datetime import datetime, timezone, timedelta
 
 try:
@@ -65,6 +67,8 @@ class GroupCreate(BaseModel):
     category: str
     category_label: str
     location: str
+    city: str
+    street: str
     description: Optional[str] = ""
     date: str
     time: str
@@ -80,6 +84,10 @@ class Group(BaseModel):
     category: str
     category_label: str
     location: str
+    city: Optional[str] = None
+    street: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
     description: str
     date: str
     time: str
@@ -255,6 +263,98 @@ def _reject_if_forbidden(*fields: str) -> None:
             )
 
 
+# ============================== Geocoding & distance ==============================
+#
+# Convert city/street to lat/lon via OpenStreetMap Nominatim (no API key
+# required, must send a proper User-Agent and be polite: 1 req/s). We cache
+# in-memory to avoid re-hitting the API for the same address.
+
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+_NOMINATIM_UA = "GroupUp/1.0 (activity-groups mobile app)"
+_geocode_cache: dict = {}
+_geocode_lock = asyncio.Lock()
+_last_geocode_at: float = 0.0
+_GEOCODE_MIN_INTERVAL_S = 1.1  # Nominatim usage policy
+
+
+async def _geocode(city: str, street: str = "") -> Optional[Tuple[float, float]]:
+    """Geocode city (+optional street) -> (lat, lon). Returns None on failure."""
+    city = (city or "").strip()
+    street = (street or "").strip()
+    if not city:
+        return None
+    key = f"{street.lower()}|{city.lower()}"
+    if key in _geocode_cache:
+        return _geocode_cache[key]
+
+    params = {"format": "json", "limit": "1", "addressdetails": "0"}
+    if street:
+        params["street"] = street
+    params["city"] = city
+    params["countrycodes"] = "it"  # bias to Italy; still works for foreign fallback below
+
+    async with _geocode_lock:
+        # simple polite throttle (Nominatim: 1 req/sec)
+        global _last_geocode_at
+        loop = asyncio.get_event_loop()
+        wait = _GEOCODE_MIN_INTERVAL_S - (loop.time() - _last_geocode_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last_geocode_at = loop.time()
+
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as c:
+                r = await c.get(
+                    _NOMINATIM_URL,
+                    params=params,
+                    headers={
+                        "User-Agent": _NOMINATIM_UA,
+                        "Accept-Language": "it,en",
+                    },
+                )
+            if r.status_code == 200 and r.json():
+                d = r.json()[0]
+                res = (float(d["lat"]), float(d["lon"]))
+                _geocode_cache[key] = res
+                return res
+            # Fallback: retry without country bias if nothing found
+            if r.status_code == 200:
+                params.pop("countrycodes", None)
+                async with httpx.AsyncClient(timeout=8.0) as c:
+                    r2 = await c.get(
+                        _NOMINATIM_URL,
+                        params=params,
+                        headers={
+                            "User-Agent": _NOMINATIM_UA,
+                            "Accept-Language": "it,en",
+                        },
+                    )
+                if r2.status_code == 200 and r2.json():
+                    d = r2.json()[0]
+                    res = (float(d["lat"]), float(d["lon"]))
+                    _geocode_cache[key] = res
+                    return res
+        except Exception as e:
+            try:
+                logger.warning(f"geocode error for '{key}': {e}")
+            except Exception:
+                pass
+        return None
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    x = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
+    )
+    return 2 * R * math.asin(math.sqrt(x))
+
+
 # ============================== Expired-group cleanup ==============================
 
 # Groups auto-delete when their event start time is more than
@@ -428,11 +528,17 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
         raise HTTPException(status_code=400, detail="max_participants < min_participants")
     if payload.max_age < payload.min_age:
         raise HTTPException(status_code=400, detail="max_age < min_age")
+    if not payload.city.strip():
+        raise HTTPException(status_code=400, detail="Inserisci la città")
+    if not payload.street.strip():
+        raise HTTPException(status_code=400, detail="Inserisci la via")
     # Content moderation on every free-text field
     _reject_if_forbidden(
         payload.title,
         payload.description or "",
         payload.location,
+        payload.city,
+        payload.street,
         payload.category_label,
     )
     # Reject events that are already expired (past date + buffer) at creation
@@ -442,6 +548,13 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
     now_local = datetime.now(_APP_TZ)
     if event_dt + timedelta(hours=EXPIRED_BUFFER_HOURS) < now_local:
         raise HTTPException(status_code=400, detail="Data del gruppo nel passato")
+
+    # Geocode the address. If it fails, still allow group creation (lat/lon
+    # will just be None and distance filtering won't apply to this group),
+    # so users aren't blocked by transient Nominatim failures.
+    coords = await _geocode(payload.city.strip(), payload.street.strip())
+    lat, lon = (coords if coords else (None, None))
+
     group_id = f"grp_{uuid.uuid4().hex[:12]}"
     owner_participant = {
         "user_id": user.user_id,
@@ -454,6 +567,10 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
         "category": payload.category,
         "category_label": payload.category_label,
         "location": payload.location.strip(),
+        "city": payload.city.strip(),
+        "street": payload.street.strip(),
+        "lat": lat,
+        "lon": lon,
         "description": (payload.description or "").strip(),
         "date": payload.date,
         "time": payload.time,
@@ -472,16 +589,36 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
 
 
 @api_router.get("/groups", response_model=List[Group])
-async def list_groups(category: Optional[str] = None, q: Optional[str] = None):
+async def list_groups(
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+    lat: Optional[float] = Query(default=None, ge=-90, le=90),
+    lon: Optional[float] = Query(default=None, ge=-180, le=180),
+    radius_km: Optional[float] = Query(default=None, ge=0.1, le=100),
+):
     await _purge_expired_groups()
     query: dict = {}
     if category and category != "all":
         query["category"] = category
     if q:
         query["title"] = {"$regex": q, "$options": "i"}
-    cursor = db.groups.find(query, {"_id": 0}).sort("created_at", -1).limit(200)
-    items = await cursor.to_list(length=200)
-    return [Group(**i) for i in items]
+    cursor = db.groups.find(query, {"_id": 0}).sort("created_at", -1).limit(500)
+    items = await cursor.to_list(length=500)
+
+    # Distance filter: only apply if the caller sent a full triple. Groups
+    # without lat/lon are INCLUDED (backward-compat with pre-geocoding data).
+    if lat is not None and lon is not None and radius_km is not None:
+        filtered = []
+        for i in items:
+            g_lat, g_lon = i.get("lat"), i.get("lon")
+            if g_lat is None or g_lon is None:
+                filtered.append(i)  # keep legacy groups visible
+                continue
+            if _haversine_km(lat, lon, g_lat, g_lon) <= radius_km:
+                filtered.append(i)
+        items = filtered
+
+    return [Group(**i) for i in items[:200]]
 
 
 @api_router.get("/groups/mine", response_model=dict)
@@ -595,6 +732,18 @@ async def post_message(group_id: str, payload: MessageCreate, user: User = Depen
     }
     await db.messages.insert_one(dict(msg))
     return Message(**_strip(msg))
+
+
+# ============================== Geocode (public) ==============================
+
+@api_router.get("/geocode")
+async def geocode(city: str = Query(..., min_length=1, max_length=100), street: str = Query("", max_length=100)):
+    """Resolve an address to lat/lon. Used by the client when the user grants
+    no GPS permission and enters a reference city manually."""
+    coords = await _geocode(city, street)
+    if not coords:
+        raise HTTPException(status_code=404, detail="Indirizzo non trovato")
+    return {"lat": coords[0], "lon": coords[1]}
 
 
 # ============================== Health ==============================

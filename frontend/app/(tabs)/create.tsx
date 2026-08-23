@@ -76,6 +76,8 @@ export default function CreateScreen() {
   const [categoryId, setCategoryId] = useState<string>("");
   const [customCategory, setCustomCategory] = useState("");
   const [location, setLocation] = useState("");
+  const [city, setCity] = useState("");
+  const [street, setStreet] = useState("");
   const [description, setDescription] = useState("");
   const [date, setDate] = useState(dayOptions[0].iso);
   const [customDateText, setCustomDateText] = useState("");
@@ -96,6 +98,8 @@ export default function CreateScreen() {
     setCategoryId("");
     setCustomCategory("");
     setLocation("");
+    setCity("");
+    setStreet("");
     setDescription("");
     setMinPart("2");
     setMaxPart("8");
@@ -118,10 +122,14 @@ export default function CreateScreen() {
       description,
       customCategory: isAltro ? customCategory : "",
       location,
+      city,
+      street,
     });
     if (modErr) return setError(modErr);
     if (dateError) return setError("Correggi la data prima di continuare");
     if (!location.trim()) return setError("Inserisci un luogo");
+    if (!city.trim()) return setError("Inserisci la città");
+    if (!street.trim()) return setError("Inserisci la via");
     const minP = parseInt(minPart, 10);
     const maxP = parseInt(maxPart, 10);
     const minA = parseInt(minAge, 10);
@@ -141,6 +149,8 @@ export default function CreateScreen() {
         category: cat,
         category_label: catLabel,
         location: location.trim(),
+        city: city.trim(),
+        street: street.trim(),
         description: description.trim(),
         date,
         time,
@@ -226,9 +236,33 @@ export default function CreateScreen() {
           style={styles.input}
           value={location}
           onChangeText={setLocation}
-          placeholder="Es. Parco Sempione, Milano"
+          placeholder="Es. Parco Sempione, Bar Centrale…"
           placeholderTextColor="#9A9A9A"
           maxLength={100}
+        />
+
+        <Text style={styles.label}>CITTÀ</Text>
+        <TextInput
+          testID="city-input"
+          style={styles.input}
+          value={city}
+          onChangeText={setCity}
+          placeholder="Es. Milano"
+          placeholderTextColor="#9A9A9A"
+          autoCapitalize="words"
+          maxLength={60}
+        />
+
+        <Text style={styles.label}>VIA</Text>
+        <TextInput
+          testID="street-input"
+          style={styles.input}
+          value={street}
+          onChangeText={setStreet}
+          placeholder="Es. Via Torino 20"
+          placeholderTextColor="#9A9A9A"
+          autoCapitalize="words"
+          maxLength={80}
         />
 
         <Text style={styles.label}>QUANDO</Text>

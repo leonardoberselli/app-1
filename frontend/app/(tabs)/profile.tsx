@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -8,12 +8,17 @@ import {
   Image,
   ActivityIndicator,
   RefreshControl,
+  TextInput,
+  Linking,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import Slider from "@react-native-community/slider";
 
 import { useAuth } from "@/src/contexts/auth";
+import { useLocationPrefs } from "@/src/contexts/location";
 import { api, ApiGroup } from "@/src/lib/api";
 import { findCategory, CUSTOM_CATEGORY } from "@/src/lib/categories";
 import { formatDate } from "@/src/lib/date";
@@ -22,12 +27,35 @@ type Tab = "created" | "joined";
 
 export default function ProfileScreen() {
   const { user, deviceId, signOut } = useAuth();
+  const {
+    prefs,
+    permission,
+    canAskAgain,
+    setRadiusKm,
+    requestGps,
+    setManualLocation,
+    clearLocation,
+  } = useLocationPrefs();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("created");
   const [created, setCreated] = useState<ApiGroup[]>([]);
   const [joined, setJoined] = useState<ApiGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualCity, setManualCity] = useState(prefs.manualCity);
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [sliderValue, setSliderValue] = useState(prefs.radiusKm);
+
+  // Sync slider when prefs load asynchronously from AsyncStorage.
+  useEffect(() => {
+    setSliderValue(prefs.radiusKm);
+  }, [prefs.radiusKm]);
+
+  useEffect(() => {
+    setManualCity(prefs.manualCity);
+  }, [prefs.manualCity]);
 
   const load = useCallback(async () => {
     if (!deviceId) return;
@@ -132,6 +160,166 @@ export default function ProfileScreen() {
             <Ionicons name="create" size={16} color="#0A0A0A" />
             <Text style={styles.editBtnText}>Modifica profilo</Text>
           </TouchableOpacity>
+        </View>
+
+        {/* ============================== Distance filter ============================== */}
+        <View style={styles.section} testID="distance-section">
+          <View style={styles.sectionHeader}>
+            <Ionicons name="locate" size={18} color="#0A0A0A" />
+            <Text style={styles.sectionTitle}>Distanza gruppi</Text>
+          </View>
+
+          <View style={styles.sliderRow}>
+            <Text style={styles.sliderLabel}>1 km</Text>
+            <Slider
+              testID="distance-slider"
+              style={{ flex: 1, height: 40 }}
+              minimumValue={1}
+              maximumValue={100}
+              step={1}
+              value={sliderValue}
+              minimumTrackTintColor="#FF4747"
+              maximumTrackTintColor="#D4D4D4"
+              thumbTintColor="#0A0A0A"
+              onValueChange={(v) => setSliderValue(Math.round(v))}
+              onSlidingComplete={(v) => setRadiusKm(Math.round(v))}
+            />
+            <Text style={styles.sliderLabel}>100 km</Text>
+          </View>
+          <View style={styles.radiusBadgeWrap}>
+            <View style={styles.radiusBadge}>
+              <Text style={styles.radiusBadgeText} testID="distance-value">
+                {Math.round(sliderValue)} km
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.locationStatus}>
+            {prefs.lat != null && prefs.lon != null ? (
+              <>
+                <Ionicons
+                  name={prefs.source === "gps" ? "location" : "pin"}
+                  size={16}
+                  color="#10B981"
+                />
+                <Text style={styles.locationStatusText} numberOfLines={1}>
+                  {prefs.source === "gps"
+                    ? "GPS attivo"
+                    : `Riferimento: ${prefs.manualCity || "città"}`}
+                </Text>
+              </>
+            ) : (
+              <>
+                <Ionicons name="alert-circle" size={16} color="#FF4747" />
+                <Text style={styles.locationStatusText}>
+                  Posizione non impostata (filtro disattivato)
+                </Text>
+              </>
+            )}
+          </View>
+
+          <View style={styles.locationActions}>
+            <TouchableOpacity
+              testID="use-gps-btn"
+              activeOpacity={0.85}
+              onPress={async () => {
+                if (permission !== "granted" && !canAskAgain) {
+                  Alert.alert(
+                    "Permessi disattivati",
+                    "Abilita la posizione dalle impostazioni di sistema.",
+                    [
+                      { text: "Apri impostazioni", onPress: () => Linking.openSettings() },
+                      { text: "Annulla", style: "cancel" },
+                    ],
+                  );
+                  return;
+                }
+                const ok = await requestGps();
+                if (!ok) {
+                  Alert.alert(
+                    "Permesso negato",
+                    "Non hai concesso l'accesso alla posizione. Puoi impostare una città di riferimento.",
+                  );
+                }
+              }}
+              style={styles.locBtn}
+            >
+              <Ionicons name="locate" size={16} color="#0A0A0A" />
+              <Text style={styles.locBtnText}>Usa GPS</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              testID="use-city-btn"
+              activeOpacity={0.85}
+              onPress={() => {
+                setManualCity(prefs.manualCity);
+                setManualError(null);
+                setManualOpen((v) => !v);
+              }}
+              style={styles.locBtn}
+            >
+              <Ionicons name="location-outline" size={16} color="#0A0A0A" />
+              <Text style={styles.locBtnText}>Città</Text>
+            </TouchableOpacity>
+
+            {(prefs.lat != null || prefs.lon != null) && (
+              <TouchableOpacity
+                testID="clear-loc-btn"
+                activeOpacity={0.85}
+                onPress={clearLocation}
+                style={[styles.locBtn, { backgroundColor: "#FFF" }]}
+              >
+                <Ionicons name="close-circle" size={16} color="#FF4747" />
+                <Text style={styles.locBtnText}>Rimuovi</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {manualOpen && (
+            <View style={{ gap: 8, marginTop: 12 }}>
+              <TextInput
+                testID="manual-city-input"
+                style={styles.cityInput}
+                value={manualCity}
+                onChangeText={setManualCity}
+                placeholder="Es. Milano"
+                placeholderTextColor="#9A9A9A"
+                autoCapitalize="words"
+              />
+              {manualError ? (
+                <Text style={styles.error} testID="manual-error">
+                  {manualError}
+                </Text>
+              ) : null}
+              <TouchableOpacity
+                testID="manual-city-submit"
+                activeOpacity={0.85}
+                onPress={async () => {
+                  if (!manualCity.trim()) {
+                    setManualError("Inserisci una città");
+                    return;
+                  }
+                  setManualBusy(true);
+                  setManualError(null);
+                  const res = await setManualLocation(manualCity.trim());
+                  setManualBusy(false);
+                  if (!res.ok) {
+                    setManualError(res.error || "Città non trovata");
+                    return;
+                  }
+                  setManualOpen(false);
+                }}
+                disabled={manualBusy}
+                style={[styles.locConfirmBtn, manualBusy && { opacity: 0.6 }]}
+              >
+                {manualBusy ? (
+                  <ActivityIndicator color="#0A0A0A" />
+                ) : (
+                  <Text style={styles.locConfirmBtnText}>Conferma città</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
 
         <View style={styles.tabs}>
@@ -295,4 +483,78 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   logoutText: { fontWeight: "900", color: "#0A0A0A", textTransform: "uppercase", letterSpacing: 1 },
+  section: {
+    marginTop: 20,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 2,
+    borderColor: "#0A0A0A",
+    borderRadius: 24,
+    padding: 18,
+    gap: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 4, height: 4 },
+    shadowOpacity: 1,
+    shadowRadius: 0,
+    elevation: 4,
+  },
+  sectionHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
+  sectionTitle: { fontSize: 16, fontWeight: "900", color: "#0A0A0A", letterSpacing: 0.3 },
+  sliderRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  sliderLabel: { fontSize: 11, fontWeight: "800", color: "#525252" },
+  radiusBadgeWrap: { alignItems: "center" },
+  radiusBadge: {
+    backgroundColor: "#FFE600",
+    borderWidth: 2,
+    borderColor: "#000",
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+  },
+  radiusBadgeText: { fontWeight: "900", color: "#0A0A0A", fontSize: 14 },
+  locationStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 6,
+  },
+  locationStatusText: { fontWeight: "700", color: "#0A0A0A", fontSize: 13, flex: 1 },
+  locationActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 4,
+  },
+  locBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderWidth: 2,
+    borderColor: "#0A0A0A",
+    backgroundColor: "#FFE600",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  locBtnText: { fontWeight: "900", color: "#0A0A0A", fontSize: 13 },
+  cityInput: {
+    backgroundColor: "#FFF",
+    borderWidth: 2,
+    borderColor: "#0A0A0A",
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#0A0A0A",
+  },
+  locConfirmBtn: {
+    backgroundColor: "#0A0A0A",
+    borderWidth: 2,
+    borderColor: "#000",
+    borderRadius: 999,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  locConfirmBtnText: { fontWeight: "900", color: "#FFE600", letterSpacing: 0.5 },
+  error: { color: "#FF4747", fontWeight: "800" },
 });

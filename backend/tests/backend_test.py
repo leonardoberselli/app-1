@@ -159,7 +159,8 @@ class TestAuthMePatch:
 
 # ======================================================= Groups
 def _group_payload(title=None, category="basketball", label="Basket",
-                   min_p=2, max_p=10, min_a=18, max_a=40):
+                   min_p=2, max_p=10, min_a=18, max_a=40,
+                   city="Milano", street="Via Torino 20"):
     # Use a dynamic future date so tests keep working over time and pass the
     # server-side "no past date" check.
     future = datetime.now(timezone.utc) + timedelta(days=30)
@@ -168,6 +169,8 @@ def _group_payload(title=None, category="basketball", label="Basket",
         "category": category,
         "category_label": label,
         "location": "Milano",
+        "city": city,
+        "street": street,
         "description": "created by backend_test",
         "date": future.strftime("%Y-%m-%d"),
         "time": "18:30",
@@ -999,3 +1002,193 @@ class TestModerationStemsIteration10:
             "droga, armi, violenza, sesso esplicito, alcol o "
             "contenuti illegali."
         )
+
+
+# ======================================================= Iteration 11: Geolocation (Nominatim + Haversine)
+# Throttle: Nominatim policy is 1 req/s; we sleep 1.3s between geocode-triggering requests.
+import time as _time
+
+NOMINATIM_SLEEP = 1.3
+
+
+@pytest.mark.usefixtures("owner_named")
+class TestGeolocationGroupCreate:
+    """POST /api/groups: city/street mandatory + geocoding to lat/lon."""
+
+    def test_missing_city_400(self, api, owner_headers):
+        payload = _group_payload(title="TEST_geo_nocity", city="", street="Via Roma 1")
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400
+        assert "citt" in r.json()["detail"].lower()
+
+    def test_missing_street_400(self, api, owner_headers):
+        _time.sleep(NOMINATIM_SLEEP)
+        payload = _group_payload(title="TEST_geo_nostreet", city="Milano", street="")
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400
+        assert "via" in r.json()["detail"].lower()
+
+    def test_missing_city_field_entirely_422(self, api, owner_headers):
+        """Removing city key from payload should be a Pydantic 422."""
+        payload = _group_payload(title="TEST_geo_nocity_key")
+        payload.pop("city")
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 422
+
+    def test_missing_street_field_entirely_422(self, api, owner_headers):
+        payload = _group_payload(title="TEST_geo_nostreet_key")
+        payload.pop("street")
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 422
+
+    def test_create_with_city_and_street_geocodes_milano(self, api, owner_headers):
+        _time.sleep(NOMINATIM_SLEEP)
+        payload = _group_payload(title="TEST_geo_milano_ok",
+                                 city="Milano", street="Via Torino 20")
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 200, r.text
+        g = r.json()
+        # lat/lon must be set and around Milan center (45.4x, 9.1x)
+        assert g["lat"] is not None and g["lon"] is not None, f"lat/lon missing: {g}"
+        assert 45.3 <= g["lat"] <= 45.6, f"lat out of Milan range: {g['lat']}"
+        assert 9.0 <= g["lon"] <= 9.3, f"lon out of Milan range: {g['lon']}"
+        assert g["city"] == "Milano"
+        assert g["street"] == "Via Torino 20"
+        pytest.milano_group_id = g["group_id"]
+        pytest.milano_lat = g["lat"]
+        pytest.milano_lon = g["lon"]
+
+    def test_reject_moderation_in_city(self, api, owner_headers):
+        payload = _group_payload(title="TEST_geo_mod_city", city="Cittadella droga", street="Via 1")
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+    def test_reject_moderation_in_street(self, api, owner_headers):
+        payload = _group_payload(title="TEST_geo_mod_street", city="Milano",
+                                 street="Via della drog4")
+        r = api.post(f"{BASE_URL}/api/groups", json=payload, headers=owner_headers)
+        assert r.status_code == 400
+        assert r.json()["detail"] == FORBIDDEN_DETAIL
+
+
+@pytest.mark.usefixtures("owner_named")
+class TestGeolocationListFilter:
+    """GET /api/groups with lat/lon/radius_km — Haversine filter + backward compat."""
+
+    def test_no_geo_params_returns_all(self, api):
+        r = api.get(f"{BASE_URL}/api/groups")
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
+        # Should include groups without lat/lon too
+        assert len(r.json()) >= 0  # regression: endpoint still works
+
+    def test_filter_by_milano_5km_includes_milano_group(self, api, owner_headers):
+        # Ensure the milano group exists in DB
+        assert hasattr(pytest, "milano_group_id"), "prerequisite: create milano group ran"
+        r = api.get(f"{BASE_URL}/api/groups",
+                    params={"lat": 45.4642, "lon": 9.1900, "radius_km": 5})
+        assert r.status_code == 200
+        ids = [g["group_id"] for g in r.json()]
+        assert pytest.milano_group_id in ids, "Milano group must be within 5km of Milan center"
+
+    def test_filter_by_milano_1km_excludes_rome_group(self, api, owner_headers):
+        # Seed a Rome group directly in DB with lat/lon at Colosseum (~41.89, 12.49)
+        rome_gid = f"grp_{uuid.uuid4().hex[:12]}"
+        future = (datetime.now(timezone.utc) + timedelta(days=15)).strftime("%Y-%m-%d")
+        db.groups.insert_one({
+            "group_id": rome_gid,
+            "title": "TEST_rome_geo",
+            "category": "basketball",
+            "category_label": "Basket",
+            "location": "Roma",
+            "city": "Roma",
+            "street": "Via dei Fori Imperiali 1",
+            "lat": 41.8902,
+            "lon": 12.4922,
+            "description": "seed rome",
+            "date": future,
+            "time": "18:00",
+            "min_participants": 2,
+            "max_participants": 10,
+            "min_age": 18,
+            "max_age": 40,
+            "owner_id": "TESTDEV_seedrome",
+            "owner_name": "Seed Rome",
+            "owner_picture": None,
+            "participants": [{"user_id": "TESTDEV_seedrome", "name": "Seed Rome", "picture": None}],
+            "created_at": datetime.now(timezone.utc),
+        })
+        try:
+            r = api.get(f"{BASE_URL}/api/groups",
+                        params={"lat": 45.4642, "lon": 9.1900, "radius_km": 1})
+            assert r.status_code == 200
+            ids = [g["group_id"] for g in r.json()]
+            assert rome_gid not in ids, "Rome group must NOT be within 1km of Milan"
+        finally:
+            db.groups.delete_one({"group_id": rome_gid})
+
+    def test_legacy_groups_without_latlon_are_included(self, api):
+        """Backward compat: groups with lat=None must be kept visible when filtering."""
+        # Seed a legacy group with no lat/lon
+        legacy_gid = f"grp_{uuid.uuid4().hex[:12]}"
+        future = (datetime.now(timezone.utc) + timedelta(days=15)).strftime("%Y-%m-%d")
+        db.groups.insert_one({
+            "group_id": legacy_gid,
+            "title": "TEST_legacy_nogeo",
+            "category": "basketball",
+            "category_label": "Basket",
+            "location": "Nowhere",
+            "city": None,
+            "street": None,
+            "lat": None,
+            "lon": None,
+            "description": "seed legacy",
+            "date": future,
+            "time": "18:00",
+            "min_participants": 2, "max_participants": 10,
+            "min_age": 18, "max_age": 40,
+            "owner_id": "TESTDEV_seedlegacy",
+            "owner_name": "Legacy", "owner_picture": None,
+            "participants": [{"user_id": "TESTDEV_seedlegacy", "name": "Legacy", "picture": None}],
+            "created_at": datetime.now(timezone.utc),
+        })
+        try:
+            r = api.get(f"{BASE_URL}/api/groups",
+                        params={"lat": 45.4642, "lon": 9.1900, "radius_km": 1})
+            assert r.status_code == 200
+            ids = [g["group_id"] for g in r.json()]
+            assert legacy_gid in ids, "Legacy no-lat/lon group must be visible under geo filter"
+        finally:
+            db.groups.delete_one({"group_id": legacy_gid})
+
+
+class TestGeocodeEndpoint:
+    """GET /api/geocode?city=&street="""
+
+    def test_geocode_milano_returns_lat_lon(self, api):
+        _time.sleep(NOMINATIM_SLEEP)
+        r = api.get(f"{BASE_URL}/api/geocode",
+                    params={"city": "Milano", "street": "Via Torino"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "lat" in body and "lon" in body
+        assert 45.3 <= body["lat"] <= 45.6
+        assert 9.0 <= body["lon"] <= 9.3
+
+    def test_geocode_nonexistent_city_404(self, api):
+        _time.sleep(NOMINATIM_SLEEP)
+        r = api.get(f"{BASE_URL}/api/geocode",
+                    params={"city": "CittaChenonEsisteSicuro123XYZ"})
+        assert r.status_code == 404
+        assert "trovat" in r.json()["detail"].lower()
+
+    def test_geocode_missing_city_422(self, api):
+        r = api.get(f"{BASE_URL}/api/geocode")
+        assert r.status_code == 422
+
+    def test_geocode_only_city_ok(self, api):
+        _time.sleep(NOMINATIM_SLEEP)
+        r = api.get(f"{BASE_URL}/api/geocode", params={"city": "Milano"})
+        assert r.status_code == 200
+        assert "lat" in r.json() and "lon" in r.json()

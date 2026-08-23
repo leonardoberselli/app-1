@@ -7,6 +7,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { AuthProvider } from "@/src/contexts/auth";
+import { LocationProvider } from "@/src/contexts/location";
 
 // Keep the native splash visible from cold start until icon fonts register.
 // Required because @expo/vector-icons' componentDidMount fallback fires
@@ -32,7 +33,9 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <KeyboardProvider>
           <AuthProvider>
-            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#FDFBF7" } }} />
+            <LocationProvider>
+              <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#FDFBF7" } }} />
+            </LocationProvider>
           </AuthProvider>
         </KeyboardProvider>
       </SafeAreaProvider>
