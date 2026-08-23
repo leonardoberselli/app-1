@@ -19,6 +19,8 @@ export type ApiUser = {
   gender?: "male" | "female" | "other" | null;
   age?: number | null;
   profile_complete?: boolean;
+  terms_version?: string | null;
+  terms_accepted_at?: string | null;
   created_at: string;
 };
 
@@ -167,6 +169,11 @@ export const api = {
   deleteAccount: () =>
     request<{ ok: boolean; deleted_groups: string[] }>("/auth/me", {
       method: "DELETE",
+    }),
+  acceptTerms: (version: string) =>
+    request<ApiUser>("/auth/accept-terms", {
+      method: "POST",
+      body: { version },
     }),
   getUser: (id: string) => request<PublicUser>(`/users/${id}`),
 

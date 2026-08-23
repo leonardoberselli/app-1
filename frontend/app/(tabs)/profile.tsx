@@ -10,6 +10,7 @@ import {
   RefreshControl,
   Linking,
   Alert,
+  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -23,6 +24,7 @@ import { findCategory, CUSTOM_CATEGORY } from "@/src/lib/categories";
 import { formatDate } from "@/src/lib/date";
 import { CityAutocomplete } from "@/src/components/CityAutocomplete";
 import { AdminUnlock } from "@/src/components/AdminUnlock";
+import { TERMS_TEXT, TERMS_VERSION } from "@/src/lib/terms";
 
 type Tab = "created" | "joined";
 
@@ -44,6 +46,7 @@ export default function ProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
+  const [termsOpen, setTermsOpen] = useState(false);
   const [manualCity, setManualCity] = useState(prefs.manualCity);
   const [manualPick, setManualPick] = useState<CitySuggestion | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
@@ -379,6 +382,17 @@ export default function ProfileScreen() {
         )}
 
         <TouchableOpacity
+          testID="terms-button"
+          activeOpacity={0.85}
+          onPress={() => setTermsOpen(true)}
+          style={styles.termsLink}
+        >
+          <Ionicons name="document-text-outline" size={18} color="#0A0A0A" />
+          <Text style={styles.termsLinkText}>Regolamento e responsabilità</Text>
+          <Ionicons name="chevron-forward" size={18} color="#0A0A0A" />
+        </TouchableOpacity>
+
+        <TouchableOpacity
           testID="reset-button"
           activeOpacity={0.85}
           onPress={async () => {
@@ -440,6 +454,31 @@ export default function ProfileScreen() {
 
         <AdminUnlock />
       </ScrollView>
+
+      <Modal
+        visible={termsOpen}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setTermsOpen(false)}
+      >
+        <SafeAreaView style={{ flex: 1, backgroundColor: "#FDFBF7" }} edges={["top", "bottom"]}>
+          <View style={styles.termsModalHeader}>
+            <Text style={styles.termsModalTitle}>Regolamento GroupUp</Text>
+            <TouchableOpacity onPress={() => setTermsOpen(false)} style={{ padding: 4 }}>
+              <Ionicons name="close" size={24} color="#0A0A0A" />
+            </TouchableOpacity>
+          </View>
+          <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>
+            <Text style={styles.termsMeta}>
+              Versione {TERMS_VERSION}
+              {user?.terms_accepted_at
+                ? ` · Accettato il ${new Date(user.terms_accepted_at).toLocaleDateString("it-IT")}`
+                : ""}
+            </Text>
+            <Text style={styles.termsBodyText}>{TERMS_TEXT}</Text>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -569,6 +608,45 @@ const styles = StyleSheet.create({
     color: "#FFE600",
     textTransform: "uppercase",
     letterSpacing: 1,
+  },
+  termsLink: {
+    marginTop: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#FFF",
+    borderWidth: 2,
+    borderColor: "#0A0A0A",
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+  },
+  termsLinkText: {
+    flex: 1,
+    fontWeight: "800",
+    color: "#0A0A0A",
+    fontSize: 14,
+  },
+  termsModalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 16,
+    borderBottomWidth: 2,
+    borderBottomColor: "#0A0A0A",
+  },
+  termsModalTitle: { fontSize: 18, fontWeight: "900", color: "#0A0A0A" },
+  termsMeta: {
+    fontSize: 12,
+    color: "#525252",
+    fontWeight: "700",
+    marginBottom: 12,
+    fontStyle: "italic",
+  },
+  termsBodyText: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: "#0A0A0A",
   },
   section: {
     marginTop: 20,

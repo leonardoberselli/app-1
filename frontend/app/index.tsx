@@ -3,6 +3,7 @@ import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity } from "rea
 import { useRouter } from "expo-router";
 
 import { useAuth } from "@/src/contexts/auth";
+import { TERMS_VERSION } from "@/src/lib/terms";
 
 /**
  * Entry route. No login screen — the auth context auto-generates a device
@@ -17,9 +18,15 @@ export default function Index() {
   useEffect(() => {
     if (loading) return;
     if (!user) return;
-    // Send back to onboarding when either identity (name) or age gate is
-    // missing; the app is 14+ only, so we require the age up front.
-    if (!user.name || !user.name.trim() || user.age == null) {
+    // Send back to onboarding when identity, age gate, or terms acceptance
+    // is missing/outdated. The app is 14+ only and every user must accept
+    // the current liability disclaimer before entering.
+    if (
+      !user.name ||
+      !user.name.trim() ||
+      user.age == null ||
+      user.terms_version !== TERMS_VERSION
+    ) {
       router.replace("/onboarding");
     } else {
       router.replace("/(tabs)");

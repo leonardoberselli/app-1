@@ -6,6 +6,8 @@ import {
   TextInput,
   TouchableOpacity,
   ActivityIndicator,
+  Modal,
+  ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
@@ -14,22 +16,25 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { useAuth } from "@/src/contexts/auth";
 import { api } from "@/src/lib/api";
-
-const MIN_APP_AGE = 14;
+import { TERMS_TEXT, TERMS_VERSION, TERMS_MIN_AGE } from "@/src/lib/terms";
 
 /**
- * First-launch onboarding: captures the user's display name and age. The age
- * gate blocks registrations below {@link MIN_APP_AGE}. Everything else (photo,
- * gender) is still deferred to the Profile tab.
+ * First-launch onboarding: captures the user's display name and age, and
+ * forces acceptance of the terms/liability disclaimer (see /src/lib/terms.ts).
+ * The age gate blocks registrations below {@link TERMS_MIN_AGE}.
  */
 export default function Onboarding() {
-  const { user, setUser } = useAuth();
+  const { user, setUser, refreshMe } = useAuth();
   const router = useRouter();
 
   const [name, setName] = useState(user?.name || "");
   const [age, setAge] = useState<string>(
     user?.age != null ? String(user.age) : "",
   );
+  const [acceptedTerms, setAcceptedTerms] = useState(
+    user?.terms_version === TERMS_VERSION,
+  );
+  const [termsOpen, setTermsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,9 +54,9 @@ export default function Onboarding() {
       setError("Inserisci la tua età");
       return;
     }
-    if (parsedAge < MIN_APP_AGE) {
+    if (parsedAge < TERMS_MIN_AGE) {
       setError(
-        `Per usare GroupUp devi avere almeno ${MIN_APP_AGE} anni.`,
+        `Per usare GroupUp devi avere almeno ${TERMS_MIN_AGE} anni.`,
       );
       return;
     }
@@ -59,12 +64,21 @@ export default function Onboarding() {
       setError("Età non valida");
       return;
     }
+    if (!acceptedTerms) {
+      setError("Devi accettare il regolamento per continuare.");
+      return;
+    }
     try {
       setSaving(true);
+      // 1) record legal acceptance (server stores version + timestamp)
+      await api.acceptTerms(TERMS_VERSION);
+      // 2) then save profile (name + age)
       const updated = await api.updateProfile({
         name: trimmed,
         age: parsedAge,
       });
+      // Re-fetch from server so terms_version/accepted_at are reflected
+      await refreshMe();
       setUser(updated);
       router.replace("/(tabs)");
     } catch (e: any) {
@@ -75,7 +89,7 @@ export default function Onboarding() {
   };
 
   const isAdultInput = parseInt(age, 10) >= 18;
-  const isValidAge = parseInt(age, 10) >= MIN_APP_AGE;
+  const isValidAge = parseInt(age, 10) >= TERMS_MIN_AGE;
 
   return (
     <SafeAreaView style={styles.container} edges={["top", "bottom"]} testID="onboarding-screen">
@@ -119,8 +133,7 @@ export default function Onboarding() {
           placeholderTextColor="#9A9A9A"
           keyboardType="number-pad"
           maxLength={3}
-          returnKeyType="go"
-          onSubmitEditing={submit}
+          returnKeyType="done"
         />
         {isValidAge && (
           <View style={styles.ageBadge}>
@@ -137,9 +150,43 @@ export default function Onboarding() {
           </View>
         )}
 
-        <Text style={styles.policyNote}>
-          {`🔒 Per motivi di sicurezza, l’iscrizione è consentita solo dai ${MIN_APP_AGE} anni in su. I minorenni possono partecipare esclusivamente a gruppi con altri minorenni, e viceversa per i maggiorenni.`}
-        </Text>
+        <Text style={styles.label}>REGOLAMENTO E RESPONSABILITÀ</Text>
+        <TouchableOpacity
+          testID="onboarding-terms-checkbox"
+          activeOpacity={0.85}
+          onPress={() => setAcceptedTerms((v) => !v)}
+          style={[
+            styles.termsRow,
+            acceptedTerms && { borderColor: "#10B981", backgroundColor: "#ECFDF5" },
+          ]}
+        >
+          <View
+            style={[
+              styles.checkbox,
+              acceptedTerms && { backgroundColor: "#10B981", borderColor: "#10B981" },
+            ]}
+          >
+            {acceptedTerms ? (
+              <Ionicons name="checkmark" size={16} color="#FFF" />
+            ) : null}
+          </View>
+          <Text style={styles.termsText}>
+            {"Ho letto e "}
+            <Text style={styles.termsBold}>accetto integralmente</Text>
+            {" il regolamento e la limitazione di responsabilità di GroupUp, e "}
+            <Text style={styles.termsBold}>manlevo il proprietario</Text>
+            {" da ogni responsabilità legata all’uso dell’app (foto caricate, geolocalizzazione, chat, incontri di persona)."}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          testID="onboarding-terms-read"
+          onPress={() => setTermsOpen(true)}
+          activeOpacity={0.7}
+          style={styles.readMoreBtn}
+        >
+          <Ionicons name="document-text-outline" size={16} color="#0A0A0A" />
+          <Text style={styles.readMoreText}>Leggi il regolamento completo</Text>
+        </TouchableOpacity>
 
         {error && (
           <Text testID="onboarding-error" style={styles.error}>
@@ -151,15 +198,22 @@ export default function Onboarding() {
           testID="onboarding-submit"
           activeOpacity={0.85}
           onPress={submit}
-          disabled={saving || !name.trim() || !age}
-          style={[styles.cta, (saving || !name.trim() || !age) && { opacity: 0.5 }]}
+          disabled={
+            saving || !name.trim() || !age || !acceptedTerms
+          }
+          style={[
+            styles.cta,
+            (saving || !name.trim() || !age || !acceptedTerms) && {
+              opacity: 0.5,
+            },
+          ]}
         >
           {saving ? (
             <ActivityIndicator color="#0A0A0A" />
           ) : (
             <>
               <Ionicons name="arrow-forward" size={20} color="#0A0A0A" />
-              <Text style={styles.ctaText}>Entra</Text>
+              <Text style={styles.ctaText}>Accetto e continuo</Text>
             </>
           )}
         </TouchableOpacity>
@@ -172,6 +226,46 @@ export default function Onboarding() {
           <Text style={styles.deviceId}>ID dispositivo: {user.user_id.slice(0, 12)}…</Text>
         ) : null}
       </KeyboardAwareScrollView>
+
+      <Modal
+        visible={termsOpen}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setTermsOpen(false)}
+      >
+        <SafeAreaView style={styles.modalContainer} edges={["top", "bottom"]}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Regolamento GroupUp</Text>
+            <TouchableOpacity
+              testID="terms-close"
+              onPress={() => setTermsOpen(false)}
+              style={styles.modalClose}
+            >
+              <Ionicons name="close" size={24} color="#0A0A0A" />
+            </TouchableOpacity>
+          </View>
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+          >
+            <Text style={styles.termsBody}>{TERMS_TEXT}</Text>
+          </ScrollView>
+          <View style={styles.modalFooter}>
+            <TouchableOpacity
+              testID="terms-accept-from-modal"
+              activeOpacity={0.85}
+              onPress={() => {
+                setAcceptedTerms(true);
+                setTermsOpen(false);
+              }}
+              style={styles.modalAcceptBtn}
+            >
+              <Ionicons name="checkmark" size={18} color="#FFE600" />
+              <Text style={styles.modalAcceptText}>Accetto</Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -179,7 +273,7 @@ export default function Onboarding() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#FDFBF7" },
   body: { padding: 24, paddingBottom: 60, gap: 6 },
-  hero: { alignItems: "center", marginTop: 20, marginBottom: 24, gap: 6 },
+  hero: { alignItems: "center", marginTop: 12, marginBottom: 20, gap: 6 },
   emoji: { fontSize: 56 },
   kicker: { fontSize: 12, fontWeight: "800", color: "#FF4747", letterSpacing: 1.5 },
   brand: {
@@ -202,7 +296,7 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     color: "#0A0A0A",
     letterSpacing: 1.5,
-    marginTop: 12,
+    marginTop: 14,
   },
   input: {
     backgroundColor: "#FFFFFF",
@@ -229,15 +323,42 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   ageBadgeText: { color: "#0A0A0A", fontWeight: "700", fontSize: 12 },
-  policyNote: {
-    color: "#525252",
-    fontSize: 12,
-    fontWeight: "600",
-    lineHeight: 18,
-    marginTop: 12,
-    backgroundColor: "#F5F5F5",
-    borderRadius: 12,
+  termsRow: {
+    flexDirection: "row",
+    gap: 12,
+    borderWidth: 2,
+    borderColor: "#0A0A0A",
+    borderRadius: 16,
     padding: 12,
+    marginTop: 8,
+    backgroundColor: "#FFFFFF",
+  },
+  checkbox: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: "#0A0A0A",
+    backgroundColor: "#FFF",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
+  termsText: { flex: 1, color: "#0A0A0A", fontSize: 13, lineHeight: 18, fontWeight: "600" },
+  termsBold: { fontWeight: "900" },
+  readMoreBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    alignSelf: "flex-start",
+    marginTop: 8,
+    paddingVertical: 4,
+  },
+  readMoreText: {
+    color: "#0A0A0A",
+    fontWeight: "800",
+    textDecorationLine: "underline",
+    fontSize: 13,
   },
   error: { color: "#FF4747", fontWeight: "800", marginTop: 12 },
   cta: {
@@ -258,7 +379,7 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   ctaText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "900",
     color: "#0A0A0A",
     letterSpacing: 1,
@@ -278,5 +399,46 @@ const styles = StyleSheet.create({
     color: "#B0B0B0",
     fontSize: 11,
     fontFamily: "monospace",
+  },
+  modalContainer: { flex: 1, backgroundColor: "#FDFBF7" },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 16,
+    borderBottomWidth: 2,
+    borderBottomColor: "#0A0A0A",
+  },
+  modalTitle: { fontSize: 18, fontWeight: "900", color: "#0A0A0A" },
+  modalClose: { padding: 4 },
+  termsBody: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: "#0A0A0A",
+    fontFamily: "System",
+  },
+  modalFooter: {
+    padding: 16,
+    borderTopWidth: 2,
+    borderTopColor: "#0A0A0A",
+    backgroundColor: "#FFF",
+  },
+  modalAcceptBtn: {
+    backgroundColor: "#0A0A0A",
+    borderWidth: 2,
+    borderColor: "#000",
+    borderRadius: 999,
+    paddingVertical: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  modalAcceptText: {
+    fontWeight: "900",
+    color: "#FFE600",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    fontSize: 14,
   },
 });

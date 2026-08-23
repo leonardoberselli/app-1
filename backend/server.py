@@ -43,7 +43,14 @@ class User(BaseModel):
     gender: Optional[Literal["male", "female", "other"]] = None
     age: Optional[int] = None
     profile_complete: bool = False
+    # Terms & liability acceptance tracking (see /api/auth/accept-terms).
+    terms_version: Optional[str] = None
+    terms_accepted_at: Optional[datetime] = None
     created_at: datetime
+
+
+class AcceptTermsIn(BaseModel):
+    version: str
 
 
 class ProfileUpdate(BaseModel):
@@ -197,6 +204,8 @@ def _user_from_doc(doc: dict) -> User:
     doc.setdefault("gender", None)
     doc.setdefault("age", None)
     doc.setdefault("profile_complete", False)
+    doc.setdefault("terms_version", None)
+    doc.setdefault("terms_accepted_at", None)
     return User(**doc)
 
 
@@ -219,6 +228,8 @@ async def _get_or_create_user(device_id: str) -> dict:
         "gender": None,
         "age": None,
         "profile_complete": False,
+        "terms_version": None,
+        "terms_accepted_at": None,
         "created_at": _now(),
     }
     await db.users.insert_one(dict(doc))
@@ -257,6 +268,27 @@ async def get_current_user_optional(
 
 MIN_APP_AGE = 14
 ADULT_MIN_AGE = 18
+
+# Terms & liability disclaimer version — keep in sync with the frontend
+# constant defined in /app/frontend/src/lib/terms.ts. Bumping this string
+# forces every previously-accepting user to re-accept the new revision.
+CURRENT_TERMS_VERSION = "2026-06-01"
+
+
+def _has_accepted_current_terms(user: Optional[User]) -> bool:
+    return bool(user and user.terms_version == CURRENT_TERMS_VERSION)
+
+
+def _require_accepted_terms(user: User) -> None:
+    if not _has_accepted_current_terms(user):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Devi accettare il regolamento aggiornato di GroupUp prima di "
+                "continuare."
+            ),
+        )
+
 
 
 def _user_age_bucket(user: Optional[User]) -> Optional[str]:
@@ -707,6 +739,42 @@ async def delete_my_account(user: User = Depends(get_current_user)):
     return await _delete_user_cascade(user.user_id)
 
 
+@api_router.post("/auth/accept-terms", response_model=User)
+async def accept_terms(
+    payload: AcceptTermsIn, user: User = Depends(get_current_user)
+):
+    """Record that the user accepted the terms/liability disclaimer at the
+    given version. The version must match the current server-side revision
+    to be considered valid — this lets us force re-acceptance whenever the
+    legal text changes."""
+    if payload.version != CURRENT_TERMS_VERSION:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Versione regolamento non valida (attesa {CURRENT_TERMS_VERSION})"
+            ),
+        )
+    now = _now()
+    await db.users.update_one(
+        {"user_id": user.user_id},
+        {
+            "$set": {
+                "terms_version": payload.version,
+                "terms_accepted_at": now,
+            }
+        },
+    )
+    fresh = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    return _user_from_doc(fresh)
+
+
+@api_router.get("/auth/terms-version")
+async def terms_version_info():
+    """Public: current terms version. Lets the client detect a bump before
+    calling any protected route."""
+    return {"version": CURRENT_TERMS_VERSION}
+
+
 # ============================== Public users ==============================
 
 @api_router.get("/users/{target_id}", response_model=PublicUser)
@@ -760,6 +828,7 @@ def _group_doc_to_model(d: dict) -> Group:
 
 @api_router.post("/groups", response_model=Group)
 async def create_group(payload: GroupCreate, user: User = Depends(get_current_user)):
+    _require_accepted_terms(user)
     if not user.name:
         raise HTTPException(status_code=400, detail="Completa il profilo (nome) prima di creare un gruppo")
     if user.age is None:
@@ -922,6 +991,7 @@ async def get_group(group_id: str):
 
 @api_router.post("/groups/{group_id}/join", response_model=Group)
 async def join_group(group_id: str, user: User = Depends(get_current_user)):
+    _require_accepted_terms(user)
     if not user.name:
         raise HTTPException(status_code=400, detail="Completa il profilo (nome) prima di unirti")
     if user.age is None:
@@ -1002,6 +1072,7 @@ async def get_messages(group_id: str, user: User = Depends(get_current_user)):
 
 @api_router.post("/groups/{group_id}/messages", response_model=Message)
 async def post_message(group_id: str, payload: MessageCreate, user: User = Depends(get_current_user)):
+    _require_accepted_terms(user)
     if not user.name:
         raise HTTPException(status_code=400, detail="Completa il profilo (nome) prima di scrivere")
     text = payload.text.strip()
