@@ -50,7 +50,10 @@ class ProfileUpdate(BaseModel):
     name: Optional[str] = None
     picture: Optional[str] = None
     gender: Optional[Literal["male", "female", "other"]] = None
-    age: Optional[int] = Field(default=None, ge=0, le=120)
+    # Minimum registration age is 14 (per app policy). Allow None only when
+    # the caller is NOT setting the age; the endpoint validates presence
+    # separately for gated actions (create/join group).
+    age: Optional[int] = Field(default=None, ge=14, le=120)
 
 
 class PublicUser(BaseModel):
@@ -76,8 +79,8 @@ class GroupCreate(BaseModel):
     time: str
     min_participants: int = Field(ge=3, le=200)
     max_participants: int = Field(ge=3, le=200)
-    min_age: int = Field(ge=0, le=120)
-    max_age: int = Field(ge=0, le=120)
+    min_age: int = Field(ge=14, le=120)
+    max_age: int = Field(ge=14, le=120)
 
 
 class Group(BaseModel):
@@ -230,6 +233,50 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
         raise HTTPException(status_code=401, detail="Device id non valido")
     doc = await _get_or_create_user(device_id)
     return _user_from_doc(doc)
+
+
+async def get_current_user_optional(
+    authorization: Optional[str] = Header(None),
+) -> Optional[User]:
+    """Like get_current_user, but returns None when the caller is anonymous
+    or sends an invalid header. Used by endpoints that must remain
+    accessible while still tailoring the response to the caller."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    device_id = authorization.split(" ", 1)[1].strip()
+    if not _DEVICE_ID_RE.match(device_id):
+        return None
+    doc = await _get_or_create_user(device_id)
+    return _user_from_doc(doc)
+
+
+# ============================== Age policy ==============================
+# Minimum age to use the app is 14. Adults are 18+, minors are 14-17.
+# Groups must be strictly age-homogeneous: either fully-adult (min_age >= 18)
+# or fully-minor (max_age <= 17). Mixed adult/minor groups are forbidden.
+
+MIN_APP_AGE = 14
+ADULT_MIN_AGE = 18
+
+
+def _user_age_bucket(user: Optional[User]) -> Optional[str]:
+    """Returns 'adult', 'minor' or None (age not set)."""
+    if user is None or user.age is None:
+        return None
+    if user.age >= ADULT_MIN_AGE:
+        return "adult"
+    return "minor"
+
+
+def _group_age_bucket(min_age: int, max_age: int) -> Optional[str]:
+    """Returns 'adult' if the range is entirely adult (min>=18), 'minor' if
+    entirely minor (max<=17), or None for a forbidden mixed range."""
+    if min_age >= ADULT_MIN_AGE:
+        return "adult"
+    if max_age <= ADULT_MIN_AGE - 1:
+        return "minor"
+    return None
+
 
 
 # ============================== Content moderation ==============================
@@ -715,10 +762,38 @@ def _group_doc_to_model(d: dict) -> Group:
 async def create_group(payload: GroupCreate, user: User = Depends(get_current_user)):
     if not user.name:
         raise HTTPException(status_code=400, detail="Completa il profilo (nome) prima di creare un gruppo")
+    if user.age is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Aggiungi la tua età nel profilo prima di creare un gruppo",
+        )
     if payload.max_participants < payload.min_participants:
         raise HTTPException(status_code=400, detail="max_participants < min_participants")
     if payload.max_age < payload.min_age:
         raise HTTPException(status_code=400, detail="max_age < min_age")
+    # Age-segregation policy: the group must be either fully-adult (min>=18)
+    # or fully-minor (max<=17). Mixed ranges are refused, and the group must
+    # match the creator's own age bucket.
+    g_bucket = _group_age_bucket(payload.min_age, payload.max_age)
+    if g_bucket is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "La fascia d'età non può mischiare minorenni e maggiorenni. "
+                "Scegli o 14-17 (minorenni) oppure 18+ (maggiorenni)."
+            ),
+        )
+    u_bucket = _user_age_bucket(user)
+    if u_bucket != g_bucket:
+        if u_bucket == "minor":
+            raise HTTPException(
+                status_code=400,
+                detail="Sei minorenne: puoi creare solo gruppi per minorenni (14-17).",
+            )
+        raise HTTPException(
+            status_code=400,
+            detail="Sei maggiorenne: puoi creare solo gruppi per maggiorenni (18+).",
+        )
     if not payload.city.strip():
         raise HTTPException(status_code=400, detail="Inserisci la città")
     # Content moderation on every free-text field
@@ -785,6 +860,7 @@ async def list_groups(
     lat: Optional[float] = Query(default=None, ge=-90, le=90),
     lon: Optional[float] = Query(default=None, ge=-180, le=180),
     radius_km: Optional[float] = Query(default=None, ge=0.1, le=100),
+    user: Optional[User] = Depends(get_current_user_optional),
 ):
     await _purge_expired_groups()
     query: dict = {}
@@ -792,6 +868,14 @@ async def list_groups(
         query["category"] = category
     if q:
         query["title"] = {"$regex": q, "$options": "i"}
+    # Age-bucket filter: adults only see adult groups, minors only see minor
+    # groups. Anonymous / age-less callers see all (they still can't join
+    # anything until they complete their profile).
+    bucket = _user_age_bucket(user)
+    if bucket == "adult":
+        query["min_age"] = {"$gte": ADULT_MIN_AGE}
+    elif bucket == "minor":
+        query["max_age"] = {"$lte": ADULT_MIN_AGE - 1}
     cursor = db.groups.find(query, {"_id": 0}).sort("created_at", -1).limit(500)
     items = await cursor.to_list(length=500)
 
@@ -840,9 +924,27 @@ async def get_group(group_id: str):
 async def join_group(group_id: str, user: User = Depends(get_current_user)):
     if not user.name:
         raise HTTPException(status_code=400, detail="Completa il profilo (nome) prima di unirti")
+    if user.age is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Aggiungi la tua età nel profilo prima di unirti a un gruppo",
+        )
     g = await db.groups.find_one({"group_id": group_id}, {"_id": 0})
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
+    # Age-segregation check
+    g_bucket = _group_age_bucket(g.get("min_age", 0), g.get("max_age", 120))
+    u_bucket = _user_age_bucket(user)
+    if g_bucket is not None and u_bucket != g_bucket:
+        if g_bucket == "adult":
+            raise HTTPException(
+                status_code=403,
+                detail="Questo gruppo è riservato ai maggiorenni (18+).",
+            )
+        raise HTTPException(
+            status_code=403,
+            detail="Questo gruppo è riservato ai minorenni (14-17).",
+        )
     if any(p["user_id"] == user.user_id for p in g["participants"]):
         return Group(**g)
     if len(g["participants"]) >= g["max_participants"]:

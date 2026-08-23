@@ -73,6 +73,9 @@ export default function CreateScreen() {
   const router = useRouter();
   const dayOptions = useMemo(() => nextDays(14), []);
 
+  const isAdult = (user?.age ?? 0) >= 18;
+  const isMinor = user?.age != null && user.age >= 14 && user.age < 18;
+
   const [title, setTitle] = useState("");
   const [categoryId, setCategoryId] = useState<string>("");
   const [customCategory, setCustomCategory] = useState("");
@@ -87,8 +90,9 @@ export default function CreateScreen() {
   const [time, setTime] = useState("18:00");
   const [minPart, setMinPart] = useState("3");
   const [maxPart, setMaxPart] = useState("8");
-  const [minAge, setMinAge] = useState("18");
-  const [maxAge, setMaxAge] = useState("40");
+  // Age-range defaults follow the creator's own bucket.
+  const [minAge, setMinAge] = useState(isMinor ? "14" : "18");
+  const [maxAge, setMaxAge] = useState(isMinor ? "17" : "40");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -106,8 +110,8 @@ export default function CreateScreen() {
     setDescription("");
     setMinPart("3");
     setMaxPart("8");
-    setMinAge("18");
-    setMaxAge("40");
+    setMinAge(isMinor ? "14" : "18");
+    setMaxAge(isMinor ? "17" : "40");
     setDate(dayOptions[0].iso);
     setCustomDateText("");
     setDateError(null);
@@ -140,9 +144,18 @@ export default function CreateScreen() {
       return setError("Numero partecipanti non valido");
     if (minP < 3) return setError("Il numero minimo di partecipanti è 3");
     if (maxP < 3) return setError("Il numero massimo di partecipanti è 3");
-    if (isNaN(minA) || isNaN(maxA) || minA < 0 || maxA < minA)
-      return setError("Età non valida");
+    if (isNaN(minA) || isNaN(maxA) || minA < 14 || maxA < minA)
+      return setError("Età non valida (minimo 14 anni)");
+    if (isAdult && minA < 18)
+      return setError("Sei maggiorenne: l'età minima del gruppo deve essere 18+");
+    if (isMinor && maxA > 17)
+      return setError("Sei minorenne: l'età massima del gruppo non può superare 17");
+    if (minA < 18 && maxA >= 18)
+      return setError(
+        "Non puoi mischiare minorenni e maggiorenni. Scegli 14-17 oppure 18+.",
+      );
     if (!deviceId || !user?.name) return setError("Completa il profilo prima di creare");
+    if (user?.age == null) return setError("Aggiungi la tua età nel profilo prima di creare");
 
     try {
       setSubmitting(true);
@@ -387,6 +400,20 @@ export default function CreateScreen() {
         </View>
 
         <Text style={styles.label}>FASCIA D&apos;ETÀ</Text>
+        <View style={styles.ageBucketBanner}>
+          <Ionicons
+            name={isAdult ? "person" : isMinor ? "school" : "help-circle"}
+            size={16}
+            color="#0A0A0A"
+          />
+          <Text style={styles.ageBucketText}>
+            {isAdult
+              ? "Sei maggiorenne: il tuo gruppo è per soli 18+."
+              : isMinor
+              ? "Sei minorenne: il tuo gruppo è per soli 14-17 anni."
+              : "Aggiungi la tua età nel profilo per creare un gruppo."}
+          </Text>
+        </View>
         <View style={styles.row}>
           <View style={styles.halfBox}>
             <Text style={styles.smallLabel}>Da</Text>
@@ -557,6 +584,19 @@ const styles = StyleSheet.create({
   hourChipActive: { backgroundColor: "#FF4747" },
   hourText: { fontWeight: "900", color: "#0A0A0A" },
   row: { flexDirection: "row", gap: 12, marginTop: 8 },
+  ageBucketBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 8,
+  },
+  ageBucketText: { flex: 1, color: "#0A0A0A", fontWeight: "700", fontSize: 12 },
   halfBox: { flex: 1 },
   numberInput: {
     backgroundColor: "#FFFFFF",

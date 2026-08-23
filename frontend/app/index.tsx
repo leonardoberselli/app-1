@@ -17,7 +17,9 @@ export default function Index() {
   useEffect(() => {
     if (loading) return;
     if (!user) return;
-    if (!user.name || !user.name.trim()) {
+    // Send back to onboarding when either identity (name) or age gate is
+    // missing; the app is 14+ only, so we require the age up front.
+    if (!user.name || !user.name.trim() || user.age == null) {
       router.replace("/onboarding");
     } else {
       router.replace("/(tabs)");

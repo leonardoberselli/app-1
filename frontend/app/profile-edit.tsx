@@ -84,7 +84,7 @@ export default function ProfileEdit() {
     if (!name.trim()) return setError("Inserisci il tuo nome");
     if (!gender) return setError("Seleziona il sesso");
     const a = parseInt(age, 10);
-    if (isNaN(a) || a < 13 || a > 120) return setError("Inserisci un'età valida (13-120)");
+    if (isNaN(a) || a < 14 || a > 120) return setError("Inserisci un'età valida (almeno 14 anni)");
     if (!picture) return setError("Aggiungi una foto profilo");
     if (!deviceId) return setError("Errore inizializzazione dispositivo");
     try {

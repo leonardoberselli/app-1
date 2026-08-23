@@ -15,16 +15,21 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/src/contexts/auth";
 import { api } from "@/src/lib/api";
 
+const MIN_APP_AGE = 14;
+
 /**
- * First-launch onboarding: single-field name capture. We keep it deliberately
- * minimal because the user asked for a zero-friction entry. Photo, gender and
- * age can be added later from the Profile tab.
+ * First-launch onboarding: captures the user's display name and age. The age
+ * gate blocks registrations below {@link MIN_APP_AGE}. Everything else (photo,
+ * gender) is still deferred to the Profile tab.
  */
 export default function Onboarding() {
   const { user, setUser } = useAuth();
   const router = useRouter();
 
-  const [name, setName] = useState("");
+  const [name, setName] = useState(user?.name || "");
+  const [age, setAge] = useState<string>(
+    user?.age != null ? String(user.age) : "",
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,9 +44,27 @@ export default function Onboarding() {
       setError("Nome troppo lungo (max 40)");
       return;
     }
+    const parsedAge = parseInt(age, 10);
+    if (isNaN(parsedAge)) {
+      setError("Inserisci la tua età");
+      return;
+    }
+    if (parsedAge < MIN_APP_AGE) {
+      setError(
+        `Per usare GroupUp devi avere almeno ${MIN_APP_AGE} anni.`,
+      );
+      return;
+    }
+    if (parsedAge > 120) {
+      setError("Età non valida");
+      return;
+    }
     try {
       setSaving(true);
-      const updated = await api.updateProfile({ name: trimmed });
+      const updated = await api.updateProfile({
+        name: trimmed,
+        age: parsedAge,
+      });
       setUser(updated);
       router.replace("/(tabs)");
     } catch (e: any) {
@@ -50,6 +73,9 @@ export default function Onboarding() {
       setSaving(false);
     }
   };
+
+  const isAdultInput = parseInt(age, 10) >= 18;
+  const isValidAge = parseInt(age, 10) >= MIN_APP_AGE;
 
   return (
     <SafeAreaView style={styles.container} edges={["top", "bottom"]} testID="onboarding-screen">
@@ -64,7 +90,8 @@ export default function Onboarding() {
           <Text style={styles.kicker}>BENVENUTO/A SU</Text>
           <Text style={styles.brand}>GroupUp</Text>
           <Text style={styles.subtitle}>
-            Come ti chiami? Ci basta un nome per iniziare.
+            Come ti chiami e quanti anni hai? Ci servono solo questi due dati
+            per iniziare.
           </Text>
         </View>
 
@@ -79,9 +106,40 @@ export default function Onboarding() {
           maxLength={40}
           autoFocus
           autoCapitalize="words"
+          returnKeyType="next"
+        />
+
+        <Text style={styles.label}>ETÀ</Text>
+        <TextInput
+          testID="onboarding-age-input"
+          style={styles.input}
+          value={age}
+          onChangeText={(t) => setAge(t.replace(/[^0-9]/g, ""))}
+          placeholder="Es. 24"
+          placeholderTextColor="#9A9A9A"
+          keyboardType="number-pad"
+          maxLength={3}
           returnKeyType="go"
           onSubmitEditing={submit}
         />
+        {isValidAge && (
+          <View style={styles.ageBadge}>
+            <Ionicons
+              name={isAdultInput ? "person" : "school"}
+              size={14}
+              color={isAdultInput ? "#0A0A0A" : "#FF4747"}
+            />
+            <Text style={styles.ageBadgeText}>
+              {isAdultInput
+                ? "Vedrai solo gruppi per maggiorenni (18+)"
+                : "Vedrai solo gruppi per minorenni (14-17)"}
+            </Text>
+          </View>
+        )}
+
+        <Text style={styles.policyNote}>
+          {`🔒 Per motivi di sicurezza, l’iscrizione è consentita solo dai ${MIN_APP_AGE} anni in su. I minorenni possono partecipare esclusivamente a gruppi con altri minorenni, e viceversa per i maggiorenni.`}
+        </Text>
 
         {error && (
           <Text testID="onboarding-error" style={styles.error}>
@@ -93,8 +151,8 @@ export default function Onboarding() {
           testID="onboarding-submit"
           activeOpacity={0.85}
           onPress={submit}
-          disabled={saving || !name.trim()}
-          style={[styles.cta, (saving || !name.trim()) && { opacity: 0.5 }]}
+          disabled={saving || !name.trim() || !age}
+          style={[styles.cta, (saving || !name.trim() || !age) && { opacity: 0.5 }]}
         >
           {saving ? (
             <ActivityIndicator color="#0A0A0A" />
@@ -107,8 +165,8 @@ export default function Onboarding() {
         </TouchableOpacity>
 
         <Text style={styles.footnote}>
-          Nessun account, nessuna password. Potrai completare foto, sesso ed
-          età quando vuoi dalla scheda Profilo.
+          Nessun account, nessuna password. Potrai completare foto e sesso
+          quando vuoi dalla scheda Profilo.
         </Text>
         {user?.user_id ? (
           <Text style={styles.deviceId}>ID dispositivo: {user.user_id.slice(0, 12)}…</Text>
@@ -144,7 +202,7 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     color: "#0A0A0A",
     letterSpacing: 1.5,
-    marginTop: 8,
+    marginTop: 12,
   },
   input: {
     backgroundColor: "#FFFFFF",
@@ -158,9 +216,32 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginTop: 8,
   },
+  ageBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: 8,
+  },
+  ageBadgeText: { color: "#0A0A0A", fontWeight: "700", fontSize: 12 },
+  policyNote: {
+    color: "#525252",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 18,
+    marginTop: 12,
+    backgroundColor: "#F5F5F5",
+    borderRadius: 12,
+    padding: 12,
+  },
   error: { color: "#FF4747", fontWeight: "800", marginTop: 12 },
   cta: {
-    marginTop: 24,
+    marginTop: 20,
     backgroundColor: "#FFE600",
     borderWidth: 2,
     borderColor: "#000",
