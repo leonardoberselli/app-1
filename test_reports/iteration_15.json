@@ -1,0 +1,50 @@
+{
+  "summary": "Iteration 15 — Gender filter on groups: FULLY VERIFIED end-to-end. BACKEND (20/20 pytest in /app/backend/tests/test_gender_filter.py, 100%): CREATE — user with gender=null cannot create male/female group (400 'Imposta il tuo sesso nel profilo...'); male user cannot create 'solo donne' group (400 'Non puoi creare un gruppo \"solo donne\"...'); female user cannot create 'solo uomini' group (400 'Non puoi creare un gruppo \"solo uomini\"...'); female creating female group → 200 and doc persisted with gender_filter='female' (verified via direct DB read + GET /api/groups/{id}); male creating male group → 200; any-gender + gender_filter='any' → 200; omitted gender_filter field → 200 with default 'any'; user with gender=null CAN create 'any' group. JOIN — user with gender=null joining male group → 400 with 'sesso ... profilo'; female user joining male group → 403 'Questo gruppo è riservato solo agli uomini.'; male user joining female group → 403 'Questo gruppo è riservato solo alle donne.'; same-gender user joins → 200 and is added to participants. LEGACY — group inserted directly without gender_filter field → GET /api/groups and GET /api/groups/{id} both return gender_filter:'any'; a gender=null user can freely join a legacy group. AGE+GENDER interaction — female-only 18+ group correctly 403s a male-25 (gender check) AND a female-15 (age-bucket check); both dimensions enforced. REGRESSION — /api/auth/session google-auth suite (16/16) still passes; GET /api/groups always includes 'gender_filter' key. FRONTEND (Expo web at http://localhost:3000, viewport 390x844) — seeded a male user + token via MongoDB, bootstrapped via localStorage.groupup_session_token; ALL 5 checks pass: (1) 'Solo donne' badge shown on the female-only card in the feed, (2) Crea tab renders 3 chips with testIDs gender-filter-any/male/female, (3) for male user the gender-filter-female chip has computed opacity=0.35 and clicking it does NOT change state, (4) clicking gender-filter-male activates the chip (background rgb(255,230,0) vs rgb(255,255,255) for inactive), (5) /group/{id} detail page renders 'Solo donne' info row with the female icon. NO console errors. No regressions detected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "shadow* style props (pre-existing)",
+        "issue": "Web console still logs the 'shadow*' style-props deprecation warning already reported in iteration 14 — not introduced by this iteration, cosmetic on web only."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_gender_filter.py",
+    "/app/test_reports/pytest/pytest_iter15.xml"
+  ],
+  "action_items": [
+    "None blocking — the gender-filter feature (backend + frontend) is production-ready.",
+    "OPTIONAL: consider surfacing the exact backend detail wording ('Imposta il tuo sesso nel profilo prima di unirti a questo gruppo') as a client-side Alert on the group-detail 'Unisciti' button so users see the same message the API returns."
+  ],
+  "critical_code_review_comments": [
+    "server.py:106 GroupCreate.gender_filter uses Literal['male','female','any'] with default 'any' — correct default, correct type, backward-compat with clients that omit the field (verified by test_omitted_gender_filter_defaults_to_any).",
+    "server.py:967-972 _group_doc_to_model.setdefault('gender_filter','any') — clean backward-compat shim; ensures every legacy doc surfaces as 'any' at the API boundary. Verified by TestLegacyGroupsNoGenderFilter.",
+    "server.py:992-1006 POST /api/groups gender policy — correctly refuses (a) gender_filter in ('male','female') without user.gender (400) and (b) mismatched gender (400 with the exact Italian strings). Runs BEFORE age validation so it doesn't leak past-date/age errors when the caller is genuinely blocked by gender.",
+    "server.py:1184-1199 join_group gender policy — correctly evaluates AFTER the age-bucket check; 400 for missing profile gender, 403 for a genuine mismatch with distinct male/female wording. Legacy groups short-circuit via `g_gender or 'any'`.",
+    "frontend/app/(tabs)/create.tsx:469-470 the disabled chip is computed from user.gender rather than from the chip key alone — this means a user with gender=null can still tap either restricted chip (state changes locally) and hit the client-side validation on submit (lines 162-176). Matches spec 'submitting must show the client-side error'. Verified live.",
+    "frontend/app/(tabs)/create.tsx:197 payload includes gender_filter — no risk of the field being dropped on the wire.",
+    "frontend/app/(tabs)/index.tsx:161-171 card badge uses conditional icon (👨/👩) + label — visually distinct from the age/participants badges, correctly hidden for gender_filter==='any'.",
+    "frontend/app/group/[id].tsx:257-268 info row uses the ionicon name 'male'/'female' — matches the badge on the feed for consistency; row is skipped when gender_filter==='any'.",
+    "frontend/src/lib/api.ts ApiGroup type — gender_filter is optional (?), so pre-migration types still compile; consumers must handle undefined ⇒ 'any' — index.tsx and [id].tsx both check strict equality on 'male'/'female', so undefined falls through correctly."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_gender_filter.py (NEW — 20 tests, 100% pass)",
+    "/app/test_reports/pytest/pytest_iter15.xml (NEW — junit report)"
+  ],
+  "success_rate": {
+    "backend": "20/20 iteration-15 gender-filter tests pass (100%); 16/16 iteration-14 auth suite still passes (no regression)",
+    "frontend": "5/5 gender-filter UI flows verified (feed badge, 3 chips render, opposite-gender chip disabled at opacity 0.35, active-chip visual state on tap, detail-page info row)"
+  },
+  "seed_data_creation": "Test file seeds users (prefix 'user_gt_') + user_sessions (prefix 'sess_gtest_') + one legacy group per test via direct MongoDB inserts; the module-scope fixture cleans them up on teardown along with any 'TEST_'-titled groups. Frontend UI test seeded 1 male user + 1 female-only group (title 'TEST_UI_Solo_donne') and cleaned up manually after run (0 rows lingering — verified).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "New backend tests: /app/backend/tests/test_gender_filter.py (20 tests). Legacy /app/backend/tests/backend_test.py is STILL stale (device-UUID auth removed since iteration 14) — do not run without rewrite. To reproduce the UI test: (1) seed a male user + session via /tmp/seed_ui.py, (2) load /login and set localStorage.groupup_session_token=<token>, (3) reload /. The location modal ('Attiva la posizione per filtrare per distanza') covers the top of the feed until dismissed via 'Salta, mostra tutti'. TestIDs shipped: gender-filter-any, gender-filter-male, gender-filter-female. Note that on the create screen the disabled chip is computed from user.gender only; for a null-gender user ALL THREE chips are tappable and validation only fires on submit.",
+  "rca_of_issue": "N/A — no bug found. Spec is fully implemented: model defaults + backward-compat, create-time policy (400 for null-gender and mismatch, correct Italian wording), join-time policy (400 for null-gender, 403 for mismatch, correct wording), legacy tolerance, ordering vs age-bucket check, GET responses always exposing the field. Frontend chip disabling + client-side mirror validation matches server rules. Feed + detail-page surfacing render correctly."
+}

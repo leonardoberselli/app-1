@@ -99,6 +99,11 @@ class GroupCreate(BaseModel):
     max_participants: int = Field(ge=3, le=200)
     min_age: int = Field(ge=14, le=120)
     max_age: int = Field(ge=14, le=120)
+    # Optional gender filter for who can join the group.
+    # - "male"   → only men
+    # - "female" → only women
+    # - "any"    → anyone (default, backward compatible)
+    gender_filter: Literal["male", "female", "any"] = "any"
 
 
 class Group(BaseModel):
@@ -118,6 +123,7 @@ class Group(BaseModel):
     max_participants: int
     min_age: int
     max_age: int
+    gender_filter: Literal["male", "female", "any"] = "any"
     owner_id: str
     owner_name: str
     owner_picture: Optional[str] = None
@@ -960,6 +966,9 @@ async def get_public_user(target_id: str, user: User = Depends(get_current_user)
 
 def _group_doc_to_model(d: dict) -> Group:
     d = _strip(dict(d))
+    # Backward-compat: groups created before the gender filter existed
+    # default to "any" (everyone welcome).
+    d.setdefault("gender_filter", "any")
     return Group(**d)
 
 
@@ -977,6 +986,24 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
         raise HTTPException(status_code=400, detail="max_participants < min_participants")
     if payload.max_age < payload.min_age:
         raise HTTPException(status_code=400, detail="max_age < min_age")
+    # Gender-filter policy: if the creator restricts the group to one gender,
+    # their own gender MUST match (otherwise they'd create a group they
+    # can't join).
+    if payload.gender_filter in ("male", "female"):
+        if not user.gender:
+            raise HTTPException(
+                status_code=400,
+                detail="Imposta il tuo sesso nel profilo prima di creare un gruppo con filtro di genere",
+            )
+        if user.gender != payload.gender_filter:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Non puoi creare un gruppo \"solo donne\" se non sei una donna."
+                    if payload.gender_filter == "female"
+                    else "Non puoi creare un gruppo \"solo uomini\" se non sei un uomo."
+                ),
+            )
     # Age-segregation policy: the group must be either fully-adult (min>=18)
     # or fully-minor (max<=17). Mixed ranges are refused, and the group must
     # match the creator's own age bucket.
@@ -1049,6 +1076,7 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
         "max_participants": payload.max_participants,
         "min_age": payload.min_age,
         "max_age": payload.max_age,
+        "gender_filter": payload.gender_filter,
         "owner_id": user.user_id,
         "owner_name": user.name,
         "owner_picture": user.picture,
@@ -1152,6 +1180,23 @@ async def join_group(group_id: str, user: User = Depends(get_current_user)):
             status_code=403,
             detail="Questo gruppo è riservato ai minorenni (14-17).",
         )
+    # Gender-filter check. "any" (or missing on legacy groups) → allow all.
+    g_gender = g.get("gender_filter") or "any"
+    if g_gender in ("male", "female"):
+        if not user.gender:
+            raise HTTPException(
+                status_code=400,
+                detail="Imposta il tuo sesso nel profilo prima di unirti a questo gruppo",
+            )
+        if user.gender != g_gender:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Questo gruppo è riservato solo alle donne."
+                    if g_gender == "female"
+                    else "Questo gruppo è riservato solo agli uomini."
+                ),
+            )
     if any(p["user_id"] == user.user_id for p in g["participants"]):
         return Group(**g)
     if len(g["participants"]) >= g["max_participants"]:

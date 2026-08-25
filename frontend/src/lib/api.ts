@@ -48,6 +48,7 @@ export type ApiGroup = {
   max_participants: number;
   min_age: number;
   max_age: number;
+  gender_filter?: "male" | "female" | "any";
   owner_id: string;
   owner_name: string;
   owner_picture?: string | null;

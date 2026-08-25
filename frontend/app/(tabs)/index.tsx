@@ -157,11 +157,22 @@ export default function HomeScreen() {
             <Text style={styles.catPillEmoji}>{cat.emoji}</Text>
             <Text style={styles.catPillText}>{item.category_label}</Text>
           </View>
-          <View style={styles.ageChip}>
-            <Ionicons name="people" size={12} color="#0A0A0A" />
-            <Text style={styles.ageChipText}>
-              {item.min_age}-{item.max_age} anni
-            </Text>
+          <View style={styles.headerBadges}>
+            {item.gender_filter === "male" ? (
+              <View style={[styles.genderBadge, { backgroundColor: "#DBEAFE" }]}>
+                <Text style={styles.genderBadgeText}>👨 Solo uomini</Text>
+              </View>
+            ) : item.gender_filter === "female" ? (
+              <View style={[styles.genderBadge, { backgroundColor: "#FCE7F3" }]}>
+                <Text style={styles.genderBadgeText}>👩 Solo donne</Text>
+              </View>
+            ) : null}
+            <View style={styles.ageChip}>
+              <Ionicons name="people" size={12} color="#0A0A0A" />
+              <Text style={styles.ageChipText}>
+                {item.min_age}-{item.max_age} anni
+              </Text>
+            </View>
           </View>
         </View>
 
@@ -476,7 +487,7 @@ const styles = StyleSheet.create({
     elevation: 4,
     gap: 10,
   },
-  cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 6 },
   catPill: {
     flexDirection: "row",
     alignItems: "center",
@@ -501,6 +512,20 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   ageChipText: { fontWeight: "800", fontSize: 11, color: "#0A0A0A" },
+  headerBadges: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexShrink: 0,
+  },
+  genderBadge: {
+    borderWidth: 1.5,
+    borderColor: "#0A0A0A",
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  genderBadgeText: { fontWeight: "800", fontSize: 10, color: "#0A0A0A" },
   cardTitle: { fontSize: 22, fontWeight: "900", color: "#0A0A0A", letterSpacing: -0.5 },
   metaRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   metaText: { color: "#525252", fontSize: 14, fontWeight: "600", flex: 1 },

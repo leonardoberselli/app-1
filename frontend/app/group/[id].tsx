@@ -10,6 +10,7 @@ import {
   TextInput,
   FlatList,
   Platform,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -89,7 +90,11 @@ export default function GroupDetail() {
       const g = await api.joinGroup(id);
       setGroup(g);
     } catch (e: any) {
-      setChatError(e?.message || "Errore");
+      const msg = e?.message || "Errore";
+      // Surface backend gate errors (age / gender / terms) prominently so
+      // the user sees WHY they can't join.
+      Alert.alert("Impossibile unirsi al gruppo", msg);
+      setChatError(msg);
     } finally {
       setActing(false);
     }
@@ -254,6 +259,18 @@ export default function GroupDetail() {
                 Età {group.min_age}-{group.max_age} anni
               </Text>
             </View>
+            {group.gender_filter === "male" || group.gender_filter === "female" ? (
+              <View style={styles.infoRow}>
+                <Ionicons
+                  name={group.gender_filter === "male" ? "male" : "female"}
+                  size={18}
+                  color="#FF4747"
+                />
+                <Text style={styles.infoText}>
+                  {group.gender_filter === "male" ? "Solo uomini" : "Solo donne"}
+                </Text>
+              </View>
+            ) : null}
             {!!group.description && (
               <Text style={styles.desc}>{group.description}</Text>
             )}

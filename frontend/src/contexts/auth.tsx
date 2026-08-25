@@ -52,6 +52,7 @@ type AuthContextValue = {
   emailVerified: boolean;
   needsEmailVerification: boolean;
   signIn: () => Promise<{ ok: boolean; error?: string }>;
+  checkPendingSession: () => Promise<{ ok: boolean; error?: string }>;
   signOut: () => Promise<void>;
   refreshMe: () => Promise<void>;
   setUser: (u: ApiUser | null) => void;
@@ -221,16 +222,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       // ---- Mobile ----
-      const redirectUrl = Linking.createURL("");
+      // Use a specific path so the deep-link back is unambiguous and easier
+      // for the OS to route back to Expo Go / the standalone build.
+      const redirectUrl = Linking.createURL("auth-callback");
       const authUrl = `${EMERGENT_AUTH_URL}?redirect=${encodeURIComponent(redirectUrl)}`;
+      console.log("[GroupUp Auth] redirectUrl =", redirectUrl);
+      console.log("[GroupUp Auth] authUrl =", authUrl);
+      (globalThis as any).__GROUPUP_LAST_REDIRECT_URL__ = redirectUrl;
+      (globalThis as any).__GROUPUP_LAST_AUTH_URL__ = authUrl;
 
       capturedUrlRef.current = null;
-      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUrl);
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUrl, {
+        // iOS: private session so login is not tied to Safari cookies.
+        preferEphemeralSession: true,
+      });
+      console.log("[GroupUp Auth] openAuthSessionAsync result =", JSON.stringify(result));
 
       // Try each source in order: result.url → deep-link listener → getInitialURL.
+      // On Android the deep link is often delivered *after* the promise
+      // resolves with dismiss, so give the listener a beat to fire.
       let url: string | null = null;
       if (result.type === "success" && (result as any).url) {
         url = (result as any).url;
+      }
+      if (!url) {
+        await new Promise((r) => setTimeout(r, 400));
       }
       if (!url && capturedUrlRef.current) url = capturedUrlRef.current;
       if (!url) {
@@ -238,11 +254,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           url = await Linking.getInitialURL();
         } catch {}
       }
+      console.log("[GroupUp Auth] callback url =", url);
 
       const sid = extractSessionId(url);
       if (!sid) {
-        // All three sources empty → user really cancelled (or an error).
-        return { ok: false, error: "Accesso annullato" };
+        const dismissed = result.type === "dismiss" || result.type === "cancel";
+        const msg = dismissed
+          ? "Accesso non completato. Se hai fatto login Google, torna qui e premi \"Ho già fatto login\"."
+          : "Login non completato: l'app non è riuscita a ricevere la risposta di Google. Riprova.";
+        return { ok: false, error: msg };
       }
 
       const res = await applySession(sid);
@@ -254,6 +274,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { ok: false, error: msg };
     } finally {
       setSigningIn(false);
+    }
+  }, [applySession]);
+
+  // ---------- checkPendingSession ----------
+  // Recovery for the Expo Go / Custom Tabs corner case where the deep link
+  // fires but the promise resolves with dismiss/no url. After the user
+  // manually returns to the app, this call retries all three sources.
+  const checkPendingSession = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
+    setAuthError(null);
+    try {
+      let url: string | null = null;
+      if (capturedUrlRef.current) url = capturedUrlRef.current;
+      if (!url) {
+        try {
+          url = await Linking.getInitialURL();
+        } catch {}
+      }
+      if (Platform.OS === "web" && !url) {
+        try {
+          const w: any = globalThis as any;
+          url = w?.location?.href || null;
+        } catch {}
+      }
+      const sid = extractSessionId(url);
+      if (!sid) return { ok: false, error: "Nessuna sessione in sospeso. Prova a rifare login." };
+      const res = await applySession(sid);
+      if (!res.ok) setAuthError(res.error || null);
+      return res;
+    } catch (e: any) {
+      const msg = e?.message || "Errore imprevisto";
+      setAuthError(msg);
+      return { ok: false, error: msg };
     }
   }, [applySession]);
 
@@ -284,6 +336,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     emailVerified: true,
     needsEmailVerification: false,
     signIn,
+    checkPendingSession,
     signOut,
     refreshMe,
     setUser,

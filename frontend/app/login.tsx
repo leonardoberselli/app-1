@@ -8,6 +8,7 @@ import {
   Image,
   Modal,
   ScrollView,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -19,19 +20,34 @@ const GOOGLE_ICON =
   "https://developers.google.com/identity/images/g-logo.png";
 
 export default function LoginScreen() {
-  const { signIn, signingIn, authError } = useAuth();
+  const { signIn, checkPendingSession, signingIn, authError } = useAuth();
   const [localError, setLocalError] = useState<string | null>(null);
   const [termsOpen, setTermsOpen] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const [checking, setChecking] = useState(false);
 
   const onGoogle = async () => {
     setLocalError(null);
+    setAttempted(true);
     const res = await signIn();
     if (!res.ok) setLocalError(res.error || null);
     // On success the /index redirect effect will pick up the user and route
     // them to /onboarding (first login) or /(tabs) (returning user).
   };
 
+  const onCheckPending = async () => {
+    setLocalError(null);
+    setChecking(true);
+    try {
+      const res = await checkPendingSession();
+      if (!res.ok) setLocalError(res.error || null);
+    } finally {
+      setChecking(false);
+    }
+  };
+
   const err = localError || authError;
+  const showRecovery = Platform.OS !== "web" && attempted && !!err;
 
   return (
     <SafeAreaView style={styles.container} edges={["top", "bottom"]} testID="login-screen">
@@ -83,6 +99,25 @@ export default function LoginScreen() {
             <Ionicons name="alert-circle" size={16} color="#FF4747" />
             <Text style={styles.errorText}>{err}</Text>
           </View>
+        ) : null}
+
+        {showRecovery ? (
+          <TouchableOpacity
+            testID="check-pending-session-button"
+            activeOpacity={0.85}
+            onPress={onCheckPending}
+            disabled={checking}
+            style={[styles.recoveryBtn, checking && { opacity: 0.6 }]}
+          >
+            {checking ? (
+              <ActivityIndicator color="#0A0A0A" />
+            ) : (
+              <>
+                <Ionicons name="refresh-circle" size={18} color="#0A0A0A" />
+                <Text style={styles.recoveryText}>Ho già fatto login, verifica</Text>
+              </>
+            )}
+          </TouchableOpacity>
         ) : null}
 
         <Text style={styles.disclaimer}>
@@ -178,6 +213,23 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   errorText: { color: "#B91C1C", fontWeight: "700", flex: 1, fontSize: 13 },
+  recoveryBtn: {
+    backgroundColor: "#FFE99A",
+    borderWidth: 2,
+    borderColor: "#0A0A0A",
+    borderRadius: 999,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 3, height: 3 },
+    shadowOpacity: 1,
+    shadowRadius: 0,
+    elevation: 3,
+  },
+  recoveryText: { fontWeight: "800", color: "#0A0A0A", fontSize: 14 },
   disclaimer: {
     textAlign: "center",
     color: "#8A8A8A",

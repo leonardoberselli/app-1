@@ -93,6 +93,10 @@ export default function CreateScreen() {
   // Age-range defaults follow the creator's own bucket.
   const [minAge, setMinAge] = useState(isMinor ? "14" : "18");
   const [maxAge, setMaxAge] = useState(isMinor ? "17" : "40");
+  // Gender filter for who can join the group. The creator can only pick a
+  // restricted option that matches their own gender — the backend enforces
+  // this too. Default is "any" (everyone).
+  const [genderFilter, setGenderFilter] = useState<"any" | "male" | "female">("any");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -112,6 +116,7 @@ export default function CreateScreen() {
     setMaxPart("8");
     setMinAge(isMinor ? "14" : "18");
     setMaxAge(isMinor ? "17" : "40");
+    setGenderFilter("any");
     setDate(dayOptions[0].iso);
     setCustomDateText("");
     setDateError(null);
@@ -154,6 +159,18 @@ export default function CreateScreen() {
       return setError(
         "Non puoi mischiare minorenni e maggiorenni. Scegli 14-17 oppure 18+.",
       );
+    if (genderFilter !== "any" && !user?.gender) {
+      return setError(
+        "Imposta il tuo sesso nel profilo prima di creare un gruppo con filtro di genere",
+      );
+    }
+    if (genderFilter !== "any" && user?.gender && user.gender !== genderFilter) {
+      return setError(
+        genderFilter === "female"
+          ? "Non puoi creare un gruppo \"solo donne\" se non sei una donna"
+          : "Non puoi creare un gruppo \"solo uomini\" se non sei un uomo",
+      );
+    }
     if (!deviceId || !user?.name) return setError("Completa il profilo prima di creare");
     if (user?.age == null) return setError("Aggiungi la tua età nel profilo prima di creare");
 
@@ -177,6 +194,7 @@ export default function CreateScreen() {
         max_participants: maxP,
         min_age: minA,
         max_age: maxA,
+        gender_filter: genderFilter,
       } as any);
       reset();
       router.push(`/group/${group.group_id}`);
@@ -439,6 +457,51 @@ export default function CreateScreen() {
           </View>
         </View>
 
+        <Text style={styles.label}>CHI PUÒ PARTECIPARE</Text>
+        <View style={styles.genderRow}>
+          {([
+            { key: "any", label: "Entrambi", emoji: "👥" },
+            { key: "male", label: "Solo uomini", emoji: "👨" },
+            { key: "female", label: "Solo donne", emoji: "👩" },
+          ] as const).map((opt) => {
+            const active = genderFilter === opt.key;
+            // Disable the option if the user's own gender doesn't match.
+            const disabled =
+              opt.key !== "any" && !!user?.gender && user.gender !== opt.key;
+            return (
+              <TouchableOpacity
+                key={opt.key}
+                testID={`gender-filter-${opt.key}`}
+                activeOpacity={0.85}
+                onPress={() => {
+                  if (disabled) return;
+                  setGenderFilter(opt.key);
+                }}
+                style={[
+                  styles.genderChip,
+                  active && styles.genderChipActive,
+                  disabled && { opacity: 0.35 },
+                ]}
+              >
+                <Text style={[styles.genderEmoji]}>{opt.emoji}</Text>
+                <Text
+                  style={[
+                    styles.genderChipText,
+                    active && styles.genderChipTextActive,
+                  ]}
+                >
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+        {!user?.gender && genderFilter !== "any" ? (
+          <Text style={styles.hint}>
+            Aggiungi il tuo sesso nel profilo per creare gruppi con filtro di genere.
+          </Text>
+        ) : null}
+
         <Text style={styles.label}>DESCRIZIONE (opzionale)</Text>
         <TextInput
           testID="description-input"
@@ -597,6 +660,37 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   ageBucketText: { flex: 1, color: "#0A0A0A", fontWeight: "700", fontSize: 12 },
+  genderRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 4,
+  },
+  genderChip: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 2,
+    borderColor: "#0A0A0A",
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 6,
+    alignItems: "center",
+    gap: 4,
+  },
+  genderChipActive: {
+    backgroundColor: "#FFE600",
+  },
+  genderChipText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#0A0A0A",
+    textAlign: "center",
+  },
+  genderChipTextActive: {
+    color: "#0A0A0A",
+  },
+  genderEmoji: {
+    fontSize: 22,
+  },
   halfBox: { flex: 1 },
   numberInput: {
     backgroundColor: "#FFFFFF",
