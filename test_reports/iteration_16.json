@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration 16 — Both deployment-readiness fixes VERIFIED end-to-end. FIX 1 (non-destructive expired-group cleanup, backend): 16/16 pytest in /app/backend/tests/test_expired_soft_delete.py. LIVE PURGE — one live purge run (after backend restart to reset the 30s in-process throttle) SOFT-deletes 3 seeded past-date groups in a single tick: (a) they disappear from GET /api/groups, (b) DB doc STILL exists with status=='expired' AND expired_at set, (c) a co-located future-date group remains visible and gets NO status field, (d) 2 messages seeded inside the first past group are STILL in db.messages after the purge (no destructive delete_many on messages), (e) GET /api/groups/{id} for a soft-deleted group STILL returns 200 (deep-link/chat-history/admin surface preserved per spec). FEED FILTER — pre-seeded status='expired' groups are excluded from GET /api/groups but visible from GET /api/groups/{id}. /api/groups/mine FILTER — expired groups excluded from BOTH 'created' AND 'joined' lists; regular future groups appear correctly; owner-vs-joiner routing regression still holds. FIX 2 (splash asset path, frontend): app.json:43 uses ./assets/images/splash-image.png which exists in /app/frontend/assets/images/ (verified via ls). Restarted expo — Metro logs show ZERO asset-resolution errors, ZERO splash-icon references, and https://social-activities-3.preview.emergentagent.com/ returns 200. The only Metro output is pre-existing 'expo@54.0.35 vs expected ~54.0.37' compat warnings unrelated to this fix. REGRESSIONS — 20/20 iteration 15 gender-filter tests still pass; 16/16 iteration 14 google-auth tests still pass; T&C join gate still returns 403 for terms=null users; cascade DELETE /api/auth/me returns 200 and invalidates the session token; missing Bearer → 401, malformed Bearer → 401, bogus well-formed token → 401. Total: 52/52 backend tests across the three suites (100%). Pre-existing stale suite: /app/backend/tests/test_iteration13_reports_admin.py still uses device-UUID Bearer tokens from before iteration 14 auth migration and fails wholesale with 401 — this is a documented stale-test issue (see iteration_15 context) NOT caused by our fix.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_expired_soft_delete.py",
+    "/app/test_reports/pytest/pytest_iter16.xml"
+  ],
+  "action_items": [
+    "None blocking — both deployment blockers are cleared.",
+    "OPTIONAL (housekeeping, not related to this iteration): rewrite /app/backend/tests/test_iteration13_reports_admin.py and /app/backend/tests/backend_test.py to use the current Google-Sign-In seeded-session pattern (see _seed_user() in test_gender_filter.py and test_expired_soft_delete.py). They currently ship 401s and are effectively dead tests.",
+    "OPTIONAL: consider a MongoDB TTL index on {expired_at:1} to auto-hard-delete after N days if long-term retention isn't desired — currently soft-deleted docs live forever."
+  ],
+  "critical_code_review_comments": [
+    "server.py:667-692 _purge_expired_groups — correctly uses update_many with {$set:{status:'expired',expired_at:now}} instead of delete_many; the cursor pre-filter {status:{$ne:'expired'}} makes the operation idempotent so subsequent throttled invocations skip already-processed docs.",
+    "server.py:1112 GET /api/groups — {status:{$ne:'expired'}} correctly EXCLUDES docs missing the status field entirely (Mongo $ne semantics treat missing==null!=='expired'), which is what we want for backward compatibility with pre-fix groups.",
+    "server.py:1148-1156 GET /api/groups/mine — same predicate applied to both created and joined pipelines, and correctly still enforces owner_id!=$user for the joined list so owners don't get duplicated.",
+    "server.py:1166-1170 GET /api/groups/{id} — deliberately does NOT filter status:'expired' so chat history / deep links / admin panel keep working, per the spec. Verified this is intentional and matches the PR description.",
+    "app.json:43 splash-image.png path — asset exists on disk. Bundler starts cleanly (no ENOENT).",
+    "Throttling caveat (informational): _purge_expired_groups has a 30s in-process throttle. In tests we work around it by restarting the backend once at module start. In production this means an event that expires at 12:00:00 may take up to ~5min (throttle interval) to be soft-deleted from the feed — this matches the pre-fix behavior and is not a regression."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_expired_soft_delete.py (NEW — 16 tests, 100% pass)",
+    "/app/test_reports/pytest/pytest_iter16.xml (NEW — junit report)",
+    "/app/test_reports/iteration_16.json (this report)"
+  ],
+  "success_rate": {
+    "backend": "16/16 iteration-16 soft-delete + regression tests (100%); 20/20 iteration-15 gender-filter + 16/16 iteration-14 google-auth all still pass (52/52 across active suites)",
+    "frontend": "N/A — bundler-only check: /app/frontend/app.json:43 asset resolves, expo restarts cleanly, root URL 200, no splash/asset errors in Metro logs"
+  },
+  "seed_data_creation": "Test file seeds users (prefix 'user_sd_') + user_sessions (prefix 'sess_sdtest_') + groups (prefix 'grp_sd_' and title 'TEST_SD_') + messages (prefix 'msg_sd_') via direct MongoDB inserts. Module-scope fixture 'api' restarts the backend once (to reset the 30s purge throttle) and cleans up all seeded data on teardown. Zero rows leak after run (verified).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "New backend tests: /app/backend/tests/test_expired_soft_delete.py (16 tests). Key nuance: _purge_expired_groups has a 30-second in-process throttle (_PURGE_MIN_INTERVAL_S=30 at server.py:632), so pytest-level tests can only observe ONE live purge per backend process; the test module fixture restarts the backend to reset this. For filter-behavior tests (e.g. 'expired group is hidden'), the recommended pattern is to pre-seed the doc with status='expired' + expired_at=<now> directly in Mongo rather than relying on the purge to run — see _seed_group(pre_expired=True). STALE FILES (do not run): /app/backend/tests/backend_test.py and /app/backend/tests/test_iteration13_reports_admin.py still use device-UUID Bearer auth from before the iteration 14 Google-Sign-In migration.",
+  "rca_of_issue": "N/A — no bug found. Both fixes are correctly implemented: (Fix 1) purge now uses update_many with $set:{status:'expired',expired_at:<now>} instead of delete_many, the cursor excludes already-expired docs so the operation is idempotent, GET /api/groups and GET /api/groups/mine both apply {status:{$ne:'expired'}}, GET /api/groups/{id} deliberately does not (preserving deep links). Messages collection is never touched. (Fix 2) app.json now references splash-image.png which exists on disk, and Metro/expo bundler starts without asset-resolution errors."
+}

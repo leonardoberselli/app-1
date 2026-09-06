@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-env node */
 // Banned packages list. Used by preinstall hook and install-guard.sh.
 
 const fs = require("fs");
@@ -48,6 +49,7 @@ if (process.argv[2] === "--args") {
 
 // Default mode: scan package.json on disk.
 const pkg = JSON.parse(
+  // eslint-disable-next-line no-undef
   fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"),
 );
 const all = { ...pkg.dependencies, ...pkg.devDependencies };

@@ -666,16 +666,27 @@ async def _purge_expired_groups(force: bool = False) -> List[str]:
 
     threshold = datetime.now(_APP_TZ) - timedelta(hours=EXPIRED_BUFFER_HOURS)
     expired: List[str] = []
-    cursor = db.groups.find({}, {"_id": 0, "group_id": 1, "date": 1, "time": 1})
+    # Only look at groups NOT already marked as expired — avoids reprocessing.
+    cursor = db.groups.find(
+        {"status": {"$ne": "expired"}},
+        {"_id": 0, "group_id": 1, "date": 1, "time": 1},
+    )
     async for g in cursor:
         dt = _event_datetime(g.get("date", ""), g.get("time", ""))
         if dt is not None and dt < threshold:
             expired.append(g["group_id"])
     if expired:
-        await db.groups.delete_many({"group_id": {"$in": expired}})
-        await db.messages.delete_many({"group_id": {"$in": expired}})
+        # SOFT-delete: mark the groups as expired instead of erasing them.
+        # This preserves historical data for moderation/analytics and is
+        # non-destructive on deploy/restart. All feed/list endpoints exclude
+        # `status: "expired"` documents.
+        now = datetime.now(_APP_TZ)
+        await db.groups.update_many(
+            {"group_id": {"$in": expired}},
+            {"$set": {"status": "expired", "expired_at": now}},
+        )
         try:
-            logger.info(f"[cleanup] purged {len(expired)} expired group(s)")
+            logger.info(f"[cleanup] soft-expired {len(expired)} group(s)")
         except Exception:
             pass
     return expired
@@ -1097,7 +1108,8 @@ async def list_groups(
     user: Optional[User] = Depends(get_current_user_optional),
 ):
     await _purge_expired_groups()
-    query: dict = {}
+    # Exclude soft-deleted (expired) groups from the feed.
+    query: dict = {"status": {"$ne": "expired"}}
     if category and category != "all":
         query["category"] = category
     if q:
@@ -1133,10 +1145,14 @@ async def list_groups(
 async def my_groups(user: User = Depends(get_current_user)):
     await _purge_expired_groups()
     created = await db.groups.find(
-        {"owner_id": user.user_id}, {"_id": 0}
+        {"owner_id": user.user_id, "status": {"$ne": "expired"}}, {"_id": 0}
     ).sort("created_at", -1).to_list(length=200)
     joined = await db.groups.find(
-        {"participants.user_id": user.user_id, "owner_id": {"$ne": user.user_id}},
+        {
+            "participants.user_id": user.user_id,
+            "owner_id": {"$ne": user.user_id},
+            "status": {"$ne": "expired"},
+        },
         {"_id": 0},
     ).sort("created_at", -1).to_list(length=200)
     return {
