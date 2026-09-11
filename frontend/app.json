@@ -1,16 +1,16 @@
 {
   "expo": {
-    "name": "GroupUp",
+    "name": "Barrio",
     "slug": "groupup",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "groupup",
+    "scheme": "barrio",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.leonardo.groupup",
+      "bundleIdentifier": "com.barrio.app",
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Scegli una foto per il tuo profilo",
         "NSCameraUsageDescription": "Scatta una foto per il tuo profilo",
@@ -23,7 +23,7 @@
         "backgroundColor": "#000"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.leonardo.groupup",
+      "package": "com.barrio.app",
       "permissions": [
         "READ_MEDIA_IMAGES",
         "ACCESS_COARSE_LOCATION",

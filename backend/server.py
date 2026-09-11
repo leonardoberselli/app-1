@@ -1,4 +1,13 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends, Query
+from fastapi import (
+    FastAPI,
+    APIRouter,
+    HTTPException,
+    Header,
+    Depends,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -8,10 +17,13 @@ import math
 import asyncio
 import logging
 import uuid
+import base64
+import binascii
+import json
 import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal, Tuple
+from typing import List, Optional, Literal, Tuple, Dict, Set, Any
 from datetime import datetime, timezone, timedelta
 
 logging.basicConfig(
@@ -129,6 +141,15 @@ class Group(BaseModel):
     owner_picture: Optional[str] = None
     participants: List[dict] = []
     created_at: datetime
+
+
+class GroupPage(BaseModel):
+    """Cursor-paginated group feed page. `next_cursor` is `null` when the
+    caller has reached the end of the stream. Cursors are opaque strings —
+    the client MUST NOT parse them."""
+
+    items: List[Group]
+    next_cursor: Optional[str] = None
 
 
 class MessageCreate(BaseModel):
@@ -321,7 +342,7 @@ def _require_accepted_terms(user: User) -> None:
         raise HTTPException(
             status_code=403,
             detail=(
-                "Devi accettare il regolamento aggiornato di GroupUp prima di "
+                "Devi accettare il regolamento aggiornato di Barrio prima di "
                 "continuare."
             ),
         )
@@ -440,7 +461,7 @@ def _reject_if_forbidden(*fields: str) -> None:
 # in-memory to avoid re-hitting the API for the same address.
 
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-_NOMINATIM_UA = "GroupUp/1.0 (activity-groups mobile app)"
+_NOMINATIM_UA = "Barrio/1.0 (activity-groups mobile app)"
 _geocode_cache: dict = {}
 _geocode_lock = asyncio.Lock()
 _last_geocode_at: float = 0.0
@@ -1094,51 +1115,134 @@ async def create_group(payload: GroupCreate, user: User = Depends(get_current_us
         "participants": [owner_participant],
         "created_at": _now(),
     }
+    # Store a GeoJSON point too so we can query with $geoWithin/$near via
+    # the 2dsphere index (the raw lat/lon fields are kept for backward-
+    # compatibility with older clients).
+    if lat is not None and lon is not None:
+        try:
+            doc["geo"] = {"type": "Point", "coordinates": [float(lon), float(lat)]}
+        except Exception:
+            pass
     await db.groups.insert_one(dict(doc))
     return _group_doc_to_model(doc)
 
 
-@api_router.get("/groups", response_model=List[Group])
+# ---- Cursor helpers (opaque URL-safe base64 of ISO datetime) ----
+
+def _encode_cursor(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return base64.urlsafe_b64encode(dt.isoformat().encode("ascii")).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(cur: Optional[str]) -> Optional[datetime]:
+    if not cur:
+        return None
+    try:
+        pad = "=" * (-len(cur) % 4)
+        raw = base64.urlsafe_b64decode((cur + pad).encode("ascii")).decode("ascii")
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return None
+
+
+@api_router.get("/groups", response_model=GroupPage)
 async def list_groups(
     category: Optional[str] = None,
     q: Optional[str] = None,
     lat: Optional[float] = Query(default=None, ge=-90, le=90),
     lon: Optional[float] = Query(default=None, ge=-180, le=180),
     radius_km: Optional[float] = Query(default=None, ge=0.1, le=100),
+    limit: int = Query(default=30, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None, max_length=256),
     user: Optional[User] = Depends(get_current_user_optional),
 ):
+    """Cursor-paginated feed.
+
+    - `limit`: page size (max 100, default 30).
+    - `cursor`: opaque page token returned by the previous call.
+    - When `lat/lon/radius_km` are all provided, results are pre-filtered
+      server-side via the 2dsphere `$geoWithin` operator; legacy groups
+      without a geo point are still surfaced (backward-compat).
+    """
     await _purge_expired_groups()
-    # Exclude soft-deleted (expired) groups from the feed.
+
     query: dict = {"status": {"$ne": "expired"}}
     if category and category != "all":
         query["category"] = category
     if q:
         query["title"] = {"$regex": q, "$options": "i"}
-    # Age-bucket filter: adults only see adult groups, minors only see minor
-    # groups. Anonymous / age-less callers see all (they still can't join
-    # anything until they complete their profile).
+    # Age-bucket filter (adults vs minors, see policy above).
     bucket = _user_age_bucket(user)
     if bucket == "adult":
         query["min_age"] = {"$gte": ADULT_MIN_AGE}
     elif bucket == "minor":
         query["max_age"] = {"$lte": ADULT_MIN_AGE - 1}
-    cursor = db.groups.find(query, {"_id": 0}).sort("created_at", -1).limit(500)
-    items = await cursor.to_list(length=500)
+    # Cursor: continue after this created_at.
+    after = _decode_cursor(cursor)
+    if after is not None:
+        query["created_at"] = {"$lt": after}
+    # Geo pre-filter (2dsphere). Only when the caller sent a full triple.
+    has_geo = lat is not None and lon is not None and radius_km is not None
+    if has_geo:
+        radius_meters = float(radius_km) * 1000.0
+        geo_filter = {
+            "geo": {
+                "$geoWithin": {
+                    "$centerSphere": [[float(lon), float(lat)], radius_meters / 6378137.0],
+                }
+            }
+        }
+        # Include groups without a geo point (legacy) for backward-compat.
+        query = {
+            "$and": [
+                query,
+                {"$or": [geo_filter, {"geo": {"$exists": False}}]},
+            ]
+        }
 
-    # Distance filter: only apply if the caller sent a full triple. Groups
-    # without lat/lon are INCLUDED (backward-compat with pre-geocoding data).
-    if lat is not None and lon is not None and radius_km is not None:
-        filtered = []
+    # Fetch limit+1 to know if there's another page. Sort by created_at
+    # DESC (newest first) — this matches the compound index we create on
+    # startup: {status, category, created_at}.
+    cursor_docs = (
+        db.groups.find(query, {"_id": 0})
+        .sort("created_at", -1)
+        .limit(limit + 1)
+    )
+    items = await cursor_docs.to_list(length=limit + 1)
+
+    # If radius_km is set BUT some legacy groups without `geo` slipped in,
+    # apply a Haversine fallback filter for those specific docs.
+    if has_geo:
+        keep: List[dict] = []
         for i in items:
+            if i.get("geo"):
+                keep.append(i)
+                continue
             g_lat, g_lon = i.get("lat"), i.get("lon")
             if g_lat is None or g_lon is None:
-                filtered.append(i)  # keep legacy groups visible
+                keep.append(i)  # truly legacy — visible
                 continue
             if _haversine_km(lat, lon, g_lat, g_lon) <= radius_km:
-                filtered.append(i)
-        items = filtered
+                keep.append(i)
+        items = keep
 
-    return [Group(**i) for i in items[:200]]
+    next_cursor: Optional[str] = None
+    if len(items) > limit:
+        # Trim to exactly `limit`; encode the last kept item's created_at
+        # as the next cursor.
+        items = items[:limit]
+        last = items[-1].get("created_at")
+        if isinstance(last, datetime):
+            next_cursor = _encode_cursor(last)
+
+    return GroupPage(
+        items=[Group(**i) for i in items],
+        next_cursor=next_cursor,
+    )
 
 
 @api_router.get("/groups/mine", response_model=dict)
@@ -1292,7 +1396,168 @@ async def post_message(group_id: str, payload: MessageCreate, user: User = Depen
         "created_at": _now(),
     }
     await db.messages.insert_one(dict(msg))
-    return Message(**_strip(msg))
+    result_msg = Message(**_strip(msg))
+    # Fan-out to any WebSocket subscriber in the room. Fire-and-forget so
+    # the HTTP response is not delayed by slow/dead sockets.
+    try:
+        asyncio.create_task(
+            chat_manager.broadcast(
+                group_id,
+                {"type": "message", "data": result_msg.model_dump(mode="json")},
+            )
+        )
+    except Exception as exc:
+        logger.warning("chat broadcast schedule failed: %s", exc)
+    return result_msg
+
+
+# ============================== Chat WebSocket ==============================
+#
+# Real-time chat delivery. Each participant of a group opens a single WS
+# to /api/ws/groups/{group_id}?token=<session_token>. The server:
+#   1. Authenticates the token (query-param, since browsers can't set
+#      Authorization headers on native WS).
+#   2. Verifies the caller is an actual participant of the group.
+#   3. Registers the socket in an in-memory room keyed by group_id.
+#   4. Streams NEW messages coming from the HTTP POST endpoint.
+#
+# Rationale: this pattern lets us push messages to 10k+ concurrent listeners
+# without every client polling every 4 seconds (5000 rps -> ~0 rps). Sending
+# still goes through POST /messages so every message keeps its content
+# moderation, ownership and rate-limit checks — the WS is broadcast-only.
+#
+# Note: this is a single-process in-memory manager. When we horizontally
+# scale to multiple workers we'll swap the manager for a Redis pub/sub
+# bridge (broadcast → publish; connections subscribe on connect). The API
+# surface for the client will not change.
+
+class _ChatConnectionManager:
+    """Per-group set of active WebSocket connections."""
+
+    def __init__(self) -> None:
+        # group_id -> set of live WebSockets
+        self._rooms: Dict[str, Set[WebSocket]] = {}
+        self._lock = asyncio.Lock()
+
+    async def connect(self, group_id: str, ws: WebSocket) -> None:
+        async with self._lock:
+            self._rooms.setdefault(group_id, set()).add(ws)
+
+    async def disconnect(self, group_id: str, ws: WebSocket) -> None:
+        async with self._lock:
+            room = self._rooms.get(group_id)
+            if room is None:
+                return
+            room.discard(ws)
+            if not room:
+                self._rooms.pop(group_id, None)
+
+    async def broadcast(self, group_id: str, payload: dict) -> None:
+        """Send `payload` (as JSON) to every socket in the room. Any socket
+        that raises during send is dropped silently — the client will
+        reconnect on its own."""
+        # Snapshot the set under the lock, then send outside the lock so a
+        # slow client cannot block others.
+        async with self._lock:
+            sockets = list(self._rooms.get(group_id, set()))
+        if not sockets:
+            return
+        stale: List[WebSocket] = []
+        for ws in sockets:
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                stale.append(ws)
+        if stale:
+            async with self._lock:
+                room = self._rooms.get(group_id)
+                if room is not None:
+                    for ws in stale:
+                        room.discard(ws)
+                    if not room:
+                        self._rooms.pop(group_id, None)
+
+    def room_size(self, group_id: str) -> int:
+        return len(self._rooms.get(group_id, set()))
+
+
+chat_manager = _ChatConnectionManager()
+
+
+@app.websocket("/api/ws/groups/{group_id}")
+async def chat_socket(websocket: WebSocket, group_id: str, token: Optional[str] = Query(default=None)):
+    """Real-time chat channel.
+
+    Query params:
+      - token: Bearer session token (same value used in HTTP Authorization)
+
+    Server → Client messages:
+      { "type": "connected" }
+      { "type": "message", "data": <Message> }
+      { "type": "error",   "detail": "..." }        (before close)
+      { "type": "pong" }                            (in reply to ping)
+
+    Client → Server:
+      { "type": "ping" }   (keep-alive; server replies "pong")
+    """
+    # Accept first so we can send a structured error before closing on auth
+    # failure — this gives the client a clean reason string.
+    await websocket.accept()
+
+    async def _fail(code: int, detail: str) -> None:
+        try:
+            await websocket.send_json({"type": "error", "detail": detail})
+        except Exception:
+            pass
+        # 4401 = auth, 4403 = forbidden, 4404 = not found (custom range)
+        await websocket.close(code=code)
+
+    tok = (token or "").strip()
+    if not tok or not _SESSION_TOKEN_RE.match(tok):
+        await _fail(4401, "Missing or invalid token")
+        return
+    user = await _lookup_session_user(tok)
+    if not user:
+        await _fail(4401, "Sessione scaduta o non valida")
+        return
+
+    g = await db.groups.find_one(
+        {"group_id": group_id},
+        {"_id": 0, "participants": 1, "status": 1},
+    )
+    if not g:
+        await _fail(4404, "Group not found")
+        return
+    if g.get("status") == "expired":
+        await _fail(4404, "Gruppo scaduto")
+        return
+    if not any(p.get("user_id") == user.user_id for p in (g.get("participants") or [])):
+        await _fail(4403, "Non sei nel gruppo")
+        return
+
+    await chat_manager.connect(group_id, websocket)
+    try:
+        await websocket.send_json({"type": "connected"})
+        # Keep-alive receive loop. We don't accept new-message inputs here
+        # (moderation lives in the HTTP endpoint); we only handle "ping".
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                data = {}
+            if isinstance(data, dict) and data.get("type") == "ping":
+                try:
+                    await websocket.send_json({"type": "pong"})
+                except Exception:
+                    break
+            # Any other client frame is ignored — WS is broadcast-only.
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:  # pragma: no cover
+        logger.warning("chat socket error group=%s: %s", group_id, exc)
+    finally:
+        await chat_manager.disconnect(group_id, websocket)
 
 
 # ============================== Geocode (public) ==============================
@@ -1571,7 +1836,7 @@ async def admin_delete_user(user_id: str, _ok: bool = Depends(require_admin)):
 
 @api_router.get("/")
 async def root():
-    return {"message": "GroupUp API"}
+    return {"message": "Barrio API"}
 
 
 # ============================== App setup ==============================
@@ -1595,22 +1860,79 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def on_startup():
+    # ---- Indexes ----
+    # Kept idempotent: create_index is a no-op when the target index
+    # already matches, so restarts are safe. Each index is wrapped
+    # individually so a failure on one doesn't block the others.
+    async def _idx(coll, keys, **opts):
+        try:
+            await coll.create_index(keys, **opts)
+        except Exception as exc:
+            logger.warning("index %s on %s failed: %s", keys, coll.name, exc)
+
+    # users
+    await _idx(db.users, "user_id", unique=True)
+    await _idx(db.users, "email", unique=True, sparse=True)
+    # groups: primary key + feed queries
+    await _idx(db.groups, "group_id", unique=True)
+    # Compound: default feed sort filters by status + created_at.
+    await _idx(db.groups, [("status", 1), ("created_at", -1)])
+    # Category-filtered feed
+    await _idx(db.groups, [("status", 1), ("category", 1), ("created_at", -1)])
+    # Age-bucket lookups
+    await _idx(db.groups, [("status", 1), ("min_age", 1)])
+    await _idx(db.groups, [("status", 1), ("max_age", 1)])
+    # /groups/mine: owned + participant lookups
+    await _idx(db.groups, "owner_id")
+    await _idx(db.groups, "participants.user_id")
+    # Geo: 2dsphere on GeoJSON point. Sparse so groups without a coord
+    # (very old ones) don't need a placeholder value.
+    await _idx(db.groups, [("geo", "2dsphere")], sparse=True)
+    # Chat: per-group history sorted by time
+    await _idx(db.messages, [("group_id", 1), ("created_at", 1)])
+    await _idx(db.messages, "message_id", unique=True)
+    await _idx(db.messages, "user_id")
+    # Sessions: unique token + TTL cleanup
+    await _idx(db.user_sessions, "session_token", unique=True)
+    await _idx(db.user_sessions, "expires_at", expireAfterSeconds=0)
+    await _idx(db.user_sessions, "user_id")
+    # Reports: admin queue + user-side history + dedup
+    await _idx(db.reports, [("status", 1), ("created_at", -1)])
+    await _idx(db.reports, [("reporter_id", 1), ("target_type", 1), ("target_id", 1)])
+    await _idx(db.reports, [("target_type", 1), ("target_id", 1), ("status", 1)])
+    await _idx(db.reports, "report_id", unique=True)
+
+    # ---- One-shot backfill: populate `geo` GeoJSON on legacy groups. ----
+    # Runs cheap because the compound index above already exists after this
+    # backfill on subsequent restarts.
     try:
-        await db.users.create_index("user_id", unique=True)
-        # Email uniqueness (case-insensitive callers pre-lowercase) — sparse
-        # so historic records without an email don't block insert.
-        await db.users.create_index("email", unique=True, sparse=True)
-        await db.groups.create_index("group_id", unique=True)
-        await db.groups.create_index("category")
-        await db.messages.create_index("group_id")
-        # Session store: unique token + TTL cleanup
-        await db.user_sessions.create_index("session_token", unique=True)
-        await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
-    except Exception as e:
-        logger.warning(f"index creation issue: {e}")
+        missing = db.groups.find(
+            {"lat": {"$ne": None}, "lon": {"$ne": None}, "geo": {"$exists": False}},
+            {"_id": 0, "group_id": 1, "lat": 1, "lon": 1},
+        )
+        bulk = 0
+        async for g in missing:
+            try:
+                await db.groups.update_one(
+                    {"group_id": g["group_id"]},
+                    {
+                        "$set": {
+                            "geo": {
+                                "type": "Point",
+                                "coordinates": [float(g["lon"]), float(g["lat"])],
+                            }
+                        }
+                    },
+                )
+                bulk += 1
+            except Exception:
+                continue
+        if bulk:
+            logger.info("[startup] geo-backfilled %d group(s)", bulk)
+    except Exception as exc:
+        logger.warning("geo backfill error: %s", exc)
 
     # Kick off a background loop that purges expired groups every 5 minutes.
-    # In-request purges cover fast-path cleanup; this catches idle windows.
     async def _bg_purge_loop():
         while True:
             try:

@@ -226,8 +226,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // for the OS to route back to Expo Go / the standalone build.
       const redirectUrl = Linking.createURL("auth-callback");
       const authUrl = `${EMERGENT_AUTH_URL}?redirect=${encodeURIComponent(redirectUrl)}`;
-      console.log("[GroupUp Auth] redirectUrl =", redirectUrl);
-      console.log("[GroupUp Auth] authUrl =", authUrl);
+      console.log("[Barrio Auth] redirectUrl =", redirectUrl);
+      console.log("[Barrio Auth] authUrl =", authUrl);
       (globalThis as any).__GROUPUP_LAST_REDIRECT_URL__ = redirectUrl;
       (globalThis as any).__GROUPUP_LAST_AUTH_URL__ = authUrl;
 
@@ -236,7 +236,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // iOS: private session so login is not tied to Safari cookies.
         preferEphemeralSession: true,
       });
-      console.log("[GroupUp Auth] openAuthSessionAsync result =", JSON.stringify(result));
+      console.log("[Barrio Auth] openAuthSessionAsync result =", JSON.stringify(result));
 
       // Try each source in order: result.url → deep-link listener → getInitialURL.
       // On Android the deep link is often delivered *after* the promise
@@ -254,7 +254,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           url = await Linking.getInitialURL();
         } catch {}
       }
-      console.log("[GroupUp Auth] callback url =", url);
+      console.log("[Barrio Auth] callback url =", url);
 
       const sid = extractSessionId(url);
       if (!sid) {

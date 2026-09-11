@@ -18,7 +18,8 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useAuth } from "@/src/contexts/auth";
-import { api, ApiGroup, ApiMessage } from "@/src/lib/api";
+import { api, ApiGroup, ApiMessage, openChatSocket, ChatSocketHandle } from "@/src/lib/api";
+import { sessionStore } from "@/src/lib/session-store";
 import { findCategory, CUSTOM_CATEGORY } from "@/src/lib/categories";
 import { formatDate } from "@/src/lib/date";
 import { ReportSheet } from "@/src/components/ReportSheet";
@@ -61,7 +62,16 @@ export default function GroupDetail() {
     if (!id || !deviceId) return;
     try {
       const ms = await api.getMessages(id);
-      setMessages(ms);
+      // Merge instead of replacing so any WS-delivered messages that
+      // arrived first aren't wiped out.
+      setMessages((prev) => {
+        const seen = new Set(prev.map((m) => m.message_id));
+        const extras = ms.filter((m) => !seen.has(m.message_id));
+        if (extras.length === 0) return prev;
+        return [...prev, ...extras].sort((a, b) =>
+          a.created_at.localeCompare(b.created_at),
+        );
+      });
       setChatError(null);
     } catch (e: any) {
       setChatError(e?.message || "Errore chat");
@@ -75,13 +85,117 @@ export default function GroupDetail() {
   const isParticipant = !!group?.participants.find((p) => p.user_id === user?.user_id);
   const isOwner = group?.owner_id === user?.user_id;
 
-  useEffect(() => {
-    if (tab === "chat" && isParticipant) {
-      loadMessages();
-      const t = setInterval(loadMessages, 4000);
-      return () => clearInterval(t);
+  // ---- Real-time chat via WebSocket (with polling fallback) ----
+  // Strategy:
+  //   1. Load history once via HTTP GET when the chat tab opens.
+  //   2. Open a WebSocket for live updates. New messages arrive as
+  //      { type: "message", data: ApiMessage } and are appended in-place.
+  //   3. If the socket fails to open (or drops) we fall back to a 5s
+  //      HTTP poll, so the chat never becomes completely blind.
+  //   4. On unmount / tab change we tear both down.
+  const wsRef = useRef<ChatSocketHandle | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const appendMessage = useCallback((m: ApiMessage) => {
+    setMessages((prev) => {
+      if (prev.some((x) => x.message_id === m.message_id)) return prev;
+      return [...prev, m];
+    });
+    setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 30);
+  }, []);
+
+  const startPollingFallback = useCallback(() => {
+    if (pollRef.current || !id) return;
+    // 5s cadence — matches (and slightly relaxes) the old 4s loop.
+    pollRef.current = setInterval(loadMessages, 5000);
+  }, [id, loadMessages]);
+
+  const stopPollingFallback = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
     }
-  }, [tab, isParticipant, loadMessages]);
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "chat" || !isParticipant || !id) return;
+
+    let disposed = false;
+
+    const cleanupSocket = () => {
+      wsRef.current?.close();
+      wsRef.current = null;
+      if (pingRef.current) {
+        clearInterval(pingRef.current);
+        pingRef.current = null;
+      }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+
+    const connect = async () => {
+      if (disposed) return;
+      const token = await sessionStore.get();
+      if (!token) {
+        // No token means auth is broken; polling won't work either but
+        // let it retry when the user re-logs in.
+        startPollingFallback();
+        return;
+      }
+      cleanupSocket();
+      const handle = openChatSocket(id, token, {
+        onOpen: () => {
+          reconnectAttemptsRef.current = 0;
+          stopPollingFallback();
+          // Keep-alive: many proxies drop idle sockets after ~60s.
+          pingRef.current = setInterval(() => {
+            wsRef.current?.send({ type: "ping" });
+          }, 25000);
+        },
+        onMessage: (m) => appendMessage(m),
+        onClose: (code) => {
+          if (pingRef.current) {
+            clearInterval(pingRef.current);
+            pingRef.current = null;
+          }
+          if (disposed) return;
+          // Hard-auth failures = don't loop; user needs to re-login.
+          if (code === 4401 || code === 4403 || code === 4404) {
+            startPollingFallback();
+            return;
+          }
+          const n = reconnectAttemptsRef.current + 1;
+          reconnectAttemptsRef.current = n;
+          if (n > 4) {
+            startPollingFallback();
+            return;
+          }
+          // Exponential backoff: 0.8s, 1.6s, 3.2s, 6.4s
+          const delay = 800 * Math.pow(2, n - 1);
+          reconnectTimerRef.current = setTimeout(connect, delay);
+        },
+        onError: () => {
+          // Errors are always followed by a close event; nothing to do here.
+        },
+      });
+      wsRef.current = handle;
+    };
+
+    // Load history immediately, then open the socket.
+    loadMessages();
+    connect();
+
+    return () => {
+      disposed = true;
+      cleanupSocket();
+      stopPollingFallback();
+    };
+  }, [tab, isParticipant, id, loadMessages, appendMessage, startPollingFallback, stopPollingFallback]);
 
   const handleJoin = async () => {
     if (!deviceId || !id) return;
@@ -132,9 +246,9 @@ export default function GroupDetail() {
     try {
       setSending(true);
       const m = await api.postMessage(id, text);
-      setMessages((prev) => [...prev, m]);
+      // Optimistic append; WS broadcast will be deduped by message_id.
+      appendMessage(m);
       setDraft("");
-      setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 50);
     } catch (e: any) {
       setChatError(e?.message || "Errore invio");
     } finally {

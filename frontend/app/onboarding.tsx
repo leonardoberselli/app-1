@@ -56,7 +56,7 @@ export default function Onboarding() {
     }
     if (parsedAge < TERMS_MIN_AGE) {
       setError(
-        `Per usare GroupUp devi avere almeno ${TERMS_MIN_AGE} anni.`,
+        `Per usare Barrio devi avere almeno ${TERMS_MIN_AGE} anni.`,
       );
       return;
     }
@@ -102,7 +102,7 @@ export default function Onboarding() {
         <View style={styles.hero}>
           <Text style={styles.emoji}>👋</Text>
           <Text style={styles.kicker}>BENVENUTO/A SU</Text>
-          <Text style={styles.brand}>GroupUp</Text>
+          <Text style={styles.brand}>Barrio</Text>
           <Text style={styles.subtitle}>
             Come ti chiami e quanti anni hai? Ci servono solo questi due dati
             per iniziare.
@@ -173,7 +173,7 @@ export default function Onboarding() {
           <Text style={styles.termsText}>
             {"Ho letto e "}
             <Text style={styles.termsBold}>accetto integralmente</Text>
-            {" il regolamento e la limitazione di responsabilità di GroupUp, e "}
+            {" il regolamento e la limitazione di responsabilità di Barrio, e "}
             <Text style={styles.termsBold}>manlevo il proprietario</Text>
             {" da ogni responsabilità legata all’uso dell’app (foto caricate, geolocalizzazione, chat, incontri di persona)."}
           </Text>
@@ -235,7 +235,7 @@ export default function Onboarding() {
       >
         <SafeAreaView style={styles.modalContainer} edges={["top", "bottom"]}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Regolamento GroupUp</Text>
+            <Text style={styles.modalTitle}>Regolamento Barrio</Text>
             <TouchableOpacity
               testID="terms-close"
               onPress={() => setTermsOpen(false)}

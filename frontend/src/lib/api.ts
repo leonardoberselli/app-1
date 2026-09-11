@@ -75,6 +75,11 @@ export type ApiMessage = {
   created_at: string;
 };
 
+export type GroupPage = {
+  items: ApiGroup[];
+  next_cursor: string | null;
+};
+
 export type ReportTargetType = "group" | "user" | "message";
 export type ReportReason =
   | "illegal_content"
@@ -181,6 +186,7 @@ export const api = {
     category?: string,
     q?: string,
     geo?: { lat: number; lon: number; radiusKm: number } | null,
+    opts?: { cursor?: string | null; limit?: number },
   ) => {
     const qs = new URLSearchParams();
     if (category && category !== "all") qs.append("category", category);
@@ -190,8 +196,10 @@ export const api = {
       qs.append("lon", String(geo.lon));
       qs.append("radius_km", String(geo.radiusKm));
     }
+    if (opts?.cursor) qs.append("cursor", opts.cursor);
+    qs.append("limit", String(Math.min(Math.max(opts?.limit ?? 30, 1), 100)));
     const str = qs.toString();
-    return request<ApiGroup[]>(`/groups${str ? `?${str}` : ""}`, { auth: false });
+    return request<GroupPage>(`/groups${str ? `?${str}` : ""}`, { auth: false });
   },
   createGroup: (payload: Partial<ApiGroup>) =>
     request<ApiGroup>("/groups", { method: "POST", body: payload }),
@@ -286,3 +294,90 @@ export const api = {
       { method: "DELETE", admin: true, auth: false },
     ),
 };
+
+// ============================== Chat WebSocket ==============================
+//
+// Long-lived socket that streams new messages for a group in real time.
+// Falls back gracefully: callers can subscribe to lifecycle callbacks and
+// implement HTTP polling if the socket refuses to connect.
+
+export type ChatSocketHandlers = {
+  onMessage: (msg: ApiMessage) => void;
+  onOpen?: () => void;
+  onClose?: (code: number, reason: string) => void;
+  onError?: (err: unknown) => void;
+};
+
+export type ChatSocketHandle = {
+  close: () => void;
+  send: (data: any) => void;
+  readyState: () => number;
+};
+
+/**
+ * Open a WebSocket to /api/ws/groups/{group_id}. Returns a small handle
+ * that lets the caller close it or send keep-alive pings. The connection
+ * is single-shot — if you need automatic reconnection, wrap this in your
+ * own retry loop (see `group/[id].tsx`).
+ */
+export function openChatSocket(
+  groupId: string,
+  token: string,
+  handlers: ChatSocketHandlers,
+): ChatSocketHandle {
+  if (!BASE) {
+    // Nothing we can do without a base URL — mimic the "closed" state so
+    // the caller falls back to polling.
+    handlers.onClose?.(4000, "missing-base");
+    return {
+      close: () => {},
+      send: () => {},
+      readyState: () => 3,
+    };
+  }
+  // http(s) → ws(s)
+  const wsBase = BASE.replace(/^http/i, "ws");
+  const url = `${wsBase}/api/ws/groups/${encodeURIComponent(groupId)}?token=${encodeURIComponent(token)}`;
+  const socket = new WebSocket(url);
+
+  socket.onopen = () => {
+    handlers.onOpen?.();
+  };
+  socket.onmessage = (ev) => {
+    try {
+      const data = typeof ev.data === "string" ? JSON.parse(ev.data) : null;
+      if (!data || typeof data !== "object") return;
+      if (data.type === "message" && data.data) {
+        handlers.onMessage(data.data as ApiMessage);
+      }
+      // "connected" / "pong" / "error" are consumed silently — callers can
+      // rely on onOpen/onClose for lifecycle.
+    } catch {
+      // Ignore malformed frames.
+    }
+  };
+  socket.onerror = (err) => {
+    handlers.onError?.(err);
+  };
+  socket.onclose = (ev) => {
+    handlers.onClose?.(ev.code || 1006, ev.reason || "");
+  };
+
+  return {
+    close: () => {
+      try {
+        socket.close();
+      } catch {
+        /* noop */
+      }
+    },
+    send: (data: any) => {
+      try {
+        socket.send(typeof data === "string" ? data : JSON.stringify(data));
+      } catch {
+        /* noop */
+      }
+    },
+    readyState: () => socket.readyState,
+  };
+}

@@ -47,7 +47,7 @@ export default function AuthCallbackScreen() {
         } catch {}
       }
 
-      console.log("[GroupUp AuthCallback] extracted session_id =", sid);
+      console.log("[Barrio AuthCallback] extracted session_id =", sid);
 
       if (!sid) {
         // 3) Last resort: hand the URL to the auth context which has its

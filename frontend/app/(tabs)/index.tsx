@@ -40,6 +40,8 @@ export default function HomeScreen() {
   const [category, setCategory] = useState<string>("all");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [promptOpen, setPromptOpen] = useState(false);
   const [manualCity, setManualCity] = useState("");
   const [manualPick, setManualPick] = useState<CitySuggestion | null>(null);
@@ -55,8 +57,9 @@ export default function HomeScreen() {
 
   const load = useCallback(async () => {
     try {
-      const list = await api.listGroups(category, undefined, geoFilter);
-      setGroups(list);
+      const page = await api.listGroups(category, undefined, geoFilter, { limit: 30 });
+      setGroups(page.items);
+      setNextCursor(page.next_cursor);
     } catch (e) {
       console.warn("listGroups", e);
     } finally {
@@ -65,6 +68,37 @@ export default function HomeScreen() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [category, geoFilter?.lat, geoFilter?.lon, geoFilter?.radiusKm]);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !nextCursor) return;
+    setLoadingMore(true);
+    try {
+      const page = await api.listGroups(category, undefined, geoFilter, {
+        cursor: nextCursor,
+        limit: 30,
+      });
+      // Dedup: cursor pagination is stable but a group could be re-created
+      // exactly at the same timestamp under load; belt & suspenders.
+      setGroups((prev) => {
+        const seen = new Set(prev.map((g) => g.group_id));
+        const extras = page.items.filter((g) => !seen.has(g.group_id));
+        return [...prev, ...extras];
+      });
+      setNextCursor(page.next_cursor);
+    } catch (e) {
+      console.warn("listGroups loadMore", e);
+    } finally {
+      setLoadingMore(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    category,
+    geoFilter?.lat,
+    geoFilter?.lon,
+    geoFilter?.radiusKm,
+    nextCursor,
+    loadingMore,
+  ]);
 
   useEffect(() => {
     setLoading(true);
@@ -300,6 +334,15 @@ export default function HomeScreen() {
           keyExtractor={(g) => g.group_id}
           renderItem={renderCard}
           contentContainerStyle={styles.listContent}
+          onEndReached={loadMore}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={
+            loadingMore ? (
+              <View style={{ paddingVertical: 20 }}>
+                <ActivityIndicator color="#FF4747" />
+              </View>
+            ) : null
+          }
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#FF4747" />
           }

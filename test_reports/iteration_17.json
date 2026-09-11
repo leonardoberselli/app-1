@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 17 — Rename GroupUp -> Barrio VERIFIED across backend and frontend, zero regression. Backend: 14/14 new rename smoke tests pass (/app/backend/tests/test_rename_barrio.py) and 52/52 pre-existing tests keep passing (test_gender_filter.py 20 + test_google_auth_session.py 16 + test_expired_soft_delete.py 16). Root endpoint GET /api/ returns exactly {\"message\": \"Barrio API\"}. T&C rejection message on POST /api/groups for a user whose terms_version=null contains 'Barrio' (verified: 'Devi accettare il regolamento aggiornato di Barrio prima di continuare.'), and does not contain 'groupup'. Auth token guard intact: missing/malformed/unknown Bearer -> 401; a seeded valid session -> 200 /api/auth/me. POST /api/auth/session still validates session_id shape. Full group cycle (create -> join -> leave -> delete) works with seeded Google-Sign-In sessions. Gender-filter (female-only refuses male joiner, 403) and age-gate (adult group refuses minor, 403) still enforce. Admin: /api/admin/verify without secret rejected; with ADMIN_SECRET header returns {ok:true}. Reports: POST /api/reports creates then de-dupes with 409 as expected. Frontend: web preview http://localhost:3000 loads OK (HTTP 200), document.title == 'Barrio', body text contains 'Barrio' and does NOT contain 'GroupUp' (case-insensitive) anywhere on the login screen. Login-screen brand text 'Barrio' visible; opening the terms modal shows title 'Regolamento Barrio' and body text starts with 'REGOLAMENTO E LIMITAZIONE DI RESPONSABILITÀ – Barrio ... Versione 2026-06-01'. Grep across /app/frontend/app and /app/frontend/src confirms the ONLY remaining references to 'groupup' are the intentionally-preserved internal keys (session-store.ts key 'groupup_session_token', api.ts ADMIN_SECRET_KEY '@groupup/admin_secret', location.tsx STORAGE_KEY '@groupup/location_prefs_v1', app.json slug 'groupup', auth-callback.tsx deep-link scheme comment) — matches the PR intent (do not break existing sessions/AsyncStorage). Bundle identifier and Android package correctly updated to com.barrio.app; scheme -> 'barrio'. No visual/UI regression on login or terms modal.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_rename_barrio.py",
+    "/app/test_reports/pytest/pytest_iter17.xml"
+  ],
+  "action_items": [
+    "None — rename is fully consistent and no regression detected.",
+    "OPTIONAL housekeeping (unchanged from iter 16): /app/backend/tests/backend_test.py still references 'GroupUp API' in TestHealth.test_root and uses the deprecated device-UUID Bearer auth from before the Google-Sign-In migration; it is already documented as stale in iter 15/16. Not blocking."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1574 root() returns {\"message\": \"Barrio API\"} — correctly renamed.",
+    "server.py:319-327 _require_accepted_terms — detail message correctly says 'regolamento aggiornato di Barrio'.",
+    "server.py:443 _NOMINATIM_UA = 'Barrio/1.0 (activity-groups mobile app)' — polite UA correctly reflects new name (Nominatim policy requires an identifiable UA; keeping it as 'Barrio/1.0' avoids being throttled as a stale bot).",
+    "app.json: name='Barrio', scheme='barrio', ios.bundleIdentifier='com.barrio.app', android.package='com.barrio.app' — all four user-visible identifiers updated. slug kept as 'groupup' per PR intent to preserve the preview tunnel URL.",
+    "session-store.ts KEY='groupup_session_token', api.ts ADMIN_SECRET_KEY='@groupup/admin_secret', location.tsx STORAGE_KEY='@groupup/location_prefs_v1' — deliberately unchanged (documented in PR); would drop existing sessions if renamed. Correct decision.",
+    "src/lib/terms.ts: 'GroupUp' -> 'Barrio' applied consistently (11 occurrences of Barrio, 0 of GroupUp)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_rename_barrio.py (NEW — 14 tests, 100% pass)",
+    "/app/test_reports/pytest/pytest_iter17.xml (NEW — junit report)",
+    "/app/test_reports/iteration_17.json (this report)"
+  ],
+  "success_rate": {
+    "backend": "14/14 rename smoke tests (100%); regression: 52/52 pre-existing tests (test_gender_filter 20 + test_google_auth_session 16 + test_expired_soft_delete 16) still pass. Total 66/66 across all active suites.",
+    "frontend": "100% — login screen renders 'Barrio' brand, document.title == 'Barrio', terms modal title 'Regolamento Barrio', no 'GroupUp' string leaks into user-visible text."
+  },
+  "seed_data_creation": "test_rename_barrio.py seeds users (email prefix 'TEST_barrio_') + user_sessions (token prefix 'sess_barriotest_') via direct Mongo inserts to bypass Google Sign-In; cleanup fixture wipes all matching rows after the module. Zero leakage.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The four user-visible surfaces of the rename are (1) app.json (name/scheme/bundleId/android.package), (2) backend GET /api/ payload, (3) backend T&C rejection detail on POST /api/groups when terms_version != CURRENT_TERMS_VERSION, (4) frontend user-visible strings in app/login.tsx, app/onboarding.tsx, app/(tabs)/profile.tsx, src/lib/terms.ts. Internal storage keys are deliberately left as 'groupup_*' / '@groupup/*' to preserve existing sessions/AsyncStorage — do NOT flag these as regressions in future iterations. To test T&C rejection you must seed a user_sessions row whose user has terms_version=null (or != CURRENT_TERMS_VERSION='2026-06-01') and POST /api/groups; see _seed_user(accept_terms=False) helper.",
+  "rca_of_issue": "N/A — no bug found. Rename correctly applied at every user-visible surface without touching business logic; all pre-existing behaviors (auth token guard, group CRUD, gender filter, age gate, T&C gate, admin auth, reports dedupe, expired-group soft-delete) confirmed working via 66/66 backend tests + live UI check."
+}

@@ -463,7 +463,7 @@ export default function ProfileScreen() {
       >
         <SafeAreaView style={{ flex: 1, backgroundColor: "#FDFBF7" }} edges={["top", "bottom"]}>
           <View style={styles.termsModalHeader}>
-            <Text style={styles.termsModalTitle}>Regolamento GroupUp</Text>
+            <Text style={styles.termsModalTitle}>Regolamento Barrio</Text>
             <TouchableOpacity onPress={() => setTermsOpen(false)} style={{ padding: 4 }}>
               <Ionicons name="close" size={24} color="#0A0A0A" />
             </TouchableOpacity>

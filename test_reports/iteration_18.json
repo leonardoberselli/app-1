@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 18 (scaling) backend: all 17 pytest tests PASS. Verified cursor pagination shape + limit validation (0/101 → 422) + invalid cursor tolerance + no-overlap paging + end-of-stream null cursor. Geo 2dsphere filter narrow (5 km around Milano excludes Roma) & wide radius; `geo` GeoJSON auto-populated on POST /groups creations. Backward-compat: legacy group with only lat/lon (no `geo`) is still returned by GET /api/groups AND filtered correctly by Haversine fallback. Startup backfill physically adds `geo` to legacy docs after restart (verified). All required MongoDB indexes present (compound status+created_at, status+category+created_at, min_age/max_age, owner_id, participants.user_id, 2dsphere geo sparse; messages {group_id,created_at} + unique message_id; reports compound + unique report_id). WebSocket /api/ws/groups/{id}?token=... verified end-to-end via `websockets` library: 4401 (missing/malformed token), 4403 (not participant), 4404 (unknown group), {type:'connected'} on success, {type:'pong'} reply to ping, and broadcast to two concurrent sockets when a third-party POST /messages is issued (both frames carry matching message_id and text). Moderation still returns 400 on forbidden keywords in POST /messages. Frontend UI (infinite scroll + WS live chat) could NOT be exercised in the web preview because the app is behind mandatory Emergent-managed Google Sign-In and there's no bypass for automated tests (the /login screen has no auto-redirect for already-authenticated users AND / → /login redirects synchronously before /api/auth/me returns). Code review of app/(tabs)/index.tsx and src/lib/api.ts confirms listGroups(cursor,limit) → GroupPage, onEndReached=loadMore with dedup by group_id, pull-to-refresh resets both list and nextCursor, and openChatSocket does http→ws URL swap with token as query param, dedup via appendMessage on incoming frames.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration18_scaling.py",
+    "/app/test_reports/pytest/pytest_iter18.xml"
+  ],
+  "action_items": [
+    "Main agent (or a real user) should self-verify the two frontend-only flows in a browser signed in via Google: (1) after seeding 35+ groups in Mongo, on the Home tab, scroll to the bottom to confirm onEndReached triggers a second GET /api/groups?cursor=... and appends more items without duplicates; footer spinner appears; pull-to-refresh resets the list. (2) Open a group chat while a second session (curl POST /api/groups/{id}/messages) sends a message and confirm it appears in the chat WITHOUT a refresh, and confirm no GET /messages polling every 4s while WS is connected.",
+    "Optional hardening (nice-to-have, not blocking): /login screen could redirect already-authenticated users to /(tabs) to make the app more resilient to accidental navigation to /login while signed in (also would unblock future E2E tests)."
+  ],
+  "critical_code_review_comments": [
+    "openChatSocket in src/lib/api.ts uses BASE.replace(/^http/i, 'ws') — this correctly maps both http→ws and https→wss thanks to the case-insensitive prefix; also handles the WSS proxy path used by the Emergent preview.",
+    "Cursor encoding is opaque base64-urlsafe of a naive-safe UTC ISO datetime; decode gracefully tolerates malformed cursors and returns None (endpoint then falls back to first page). Verified.",
+    "chat_manager.broadcast is fire-and-forget via asyncio.create_task in post_message. Broadcast happens AFTER DB insert, so the HTTP client will always get the persisted doc before subscribers see the frame; ordering guarantee is per-connection since a single event loop serialises send_json on each socket.",
+    "Geo query uses $centerSphere with radius/6378137 (Earth radius in meters). Note: MongoDB $centerSphere expects radius in RADIANS (radius_km*1000 / 6378137 converts meters to radians via earth radius). Correct.",
+    "Startup backfill uses find({lat: {$ne: None}, lon: {$ne: None}, geo: {$exists: False}}) — verified to backfill legacy groups on restart (grp_backfill_* was populated correctly).",
+    "backend_test.py (older Iter1-14 suite) still asserts `message == 'GroupUp API'` while root now returns 'Barrio API' — pre-existing regression, not part of Iter18 scope."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration18_scaling.py (new; 17 tests, all passing)"
+  ],
+  "success_rate": {"backend": "100% (17/17)", "frontend": "not-tested-in-browser (auth-gated)"},
+  "seed_data_creation": "Test creates users prefixed user_it18_/user_uitest_ + sessions sess_it18_/sess_uitest_ and groups grp_it18_/grp_uitest_/grp_backfill_. All cleaned up in module teardown fixture / inline. Backfill verification group also cleaned.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The app is behind mandatory Emergent Google Sign-In. Injecting a valid session_token into localStorage under key 'groupup_session_token' does NOT bypass the login gate because (a) the /login screen has no auto-redirect for already-authenticated users and (b) the / → /login redirect at app root races the async /api/auth/me and wins. To actually test authenticated UI flows via Playwright, one option is to add a temporary redirect in /login when useAuth().user is set (or to add a `?debug_token=` query param honored by _layout.tsx). Meanwhile, backend + WebSocket coverage via test_iteration18_scaling.py is comprehensive.",
+  "rca_of_issue": "N/A — no failures found in Iteration 18."
+}

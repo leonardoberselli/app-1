@@ -476,3 +476,185 @@ agent_communication:
     message: |
       Iterazione 14: aggiunto safety banner nel group detail. Solo UI, no
       backend changes.
+
+# ============================== Iteration 18 (Scaling 10k users) ==============================
+
+user_problem_statement: |
+  Rendere l'app scalabile a 10.000+ utenti concorrenti in chat.
+  Piano in 3 fasi accettato dall'utente:
+    Fase 1 (P0): WebSocket per la chat gruppo (rimuovere polling 4s)
+    Fase 2 (P1): Indici MongoDB (2dsphere + compound) per query veloci
+    Fase 3 (P2): Cursor pagination sul feed dei gruppi
+
+backend:
+  - task: "WebSocket chat endpoint /api/ws/groups/{group_id}?token="
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Nuovo endpoint `@app.websocket("/api/ws/groups/{group_id}")` con
+          auth via query param `token` (Bearer session token). Il server
+          verifica che l'utente esista, che sia partecipante del gruppo e
+          che il gruppo non sia expired. Codici errore custom:
+            4401 = token invalid / expired
+            4403 = non partecipante
+            4404 = gruppo non trovato / expired
+          Messaggi lato server:
+            {"type": "connected"} on open
+            {"type": "message", "data": <ApiMessage>} broadcast su nuovo msg
+            {"type": "pong"} risposta a client ping
+          Ping keep-alive gestito lato client ogni 25s.
+          `_ChatConnectionManager` singleton gestisce le room in-memory
+          (dict group_id -> set[WebSocket]) con lock asyncio per thread-safety.
+          Broadcast è fire-and-forget su POST /messages via asyncio.create_task.
+
+  - task: "Indici MongoDB per scalabilità (compound + 2dsphere)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          on_startup ora crea idempotentemente:
+            groups: {status,created_at}, {status,category,created_at},
+                    {status,min_age}, {status,max_age}, owner_id,
+                    participants.user_id, geo (2dsphere sparse)
+            messages: {group_id,created_at}, message_id (unique), user_id
+            reports: {status,created_at}, {reporter_id,target_type,target_id},
+                     {target_type,target_id,status}, report_id (unique)
+            user_sessions: session_token (unique), TTL expires_at, user_id
+            users: user_id (unique), email (unique sparse)
+          Backfill: gruppi legacy senza `geo` GeoJSON vengono aggiornati con
+          {type:"Point", coordinates:[lon,lat]} alla partenza.
+
+  - task: "Cursor pagination su GET /api/groups (limit + cursor)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Response shape CAMBIATA (breaking):
+            OLD: List[Group]
+            NEW: GroupPage { items: List[Group], next_cursor: str | null }
+          Nuovi query params: `limit` (1-100, default 30), `cursor` (opaque
+          base64 urlsafe). Cursor decodifica in datetime; query aggiunge
+          `created_at < cursor_dt`. Fetch limit+1 per sapere se next_cursor.
+          Distance filter geo: usa `$geoWithin/$centerSphere` con 2dsphere
+          per push-down su Mongo. I gruppi legacy senza `geo` sono inclusi
+          via `$or: {geo:{$exists:false}}` + Haversine fallback.
+          Il broadcast WebSocket avviene DOPO l'insert HTTP: la POST HTTP
+          resta l'unico punto di validazione (moderation, età, terms), la
+          WS è broadcast-only.
+
+frontend:
+  - task: "WebSocket client per chat gruppo (con fallback polling)"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/lib/api.ts, /app/frontend/app/group/[id].tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Nuova helper `openChatSocket(groupId, token, handlers)` in api.ts.
+          Costruisce URL `wss://.../api/ws/groups/{id}?token=<>` da BASE_URL.
+          group/[id].tsx: rimosso setInterval 4s. Nuovo useEffect apre WS
+          quando `tab === "chat" && isParticipant`. Strategia:
+            1. GET /messages una tantum per storia iniziale (merge, non replace)
+            2. WS aperto; onmessage -> appendMessage (dedup by message_id)
+            3. onclose con codici 4401/4403/4404 -> polling fallback (no retry)
+            4. Altri codici -> reconnect backoff 0.8s→1.6s→3.2s→6.4s, max 4 tentativi
+            5. Dopo 4 tentativi -> polling ogni 5s
+            6. Ping keep-alive ogni 25s per attraversare i proxy
+          sendMessage() ora usa appendMessage() (idempotente) invece di
+          setMessages([...prev, m]) per evitare doppi (WS ridelivery).
+
+  - task: "Infinite scroll cursor pagination sul feed home"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/index.tsx, /app/frontend/src/lib/api.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          api.listGroups ora accetta `opts.cursor` e ritorna GroupPage.
+          index.tsx: stato `nextCursor` e `loadingMore`. `load()` fetch 30
+          items iniziali. `loadMore()` triggered da FlatList onEndReached
+          (threshold 0.5): usa cursor per fetch successivo, dedup by group_id.
+          Footer: ActivityIndicator quando loadingMore. Pull-to-refresh
+          resetta lista + cursor.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.8"
+  test_sequence: 18
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "WebSocket chat endpoint /api/ws/groups/{group_id}?token="
+    - "Indici MongoDB per scalabilità (compound + 2dsphere)"
+    - "Cursor pagination su GET /api/groups (limit + cursor)"
+    - "WebSocket client per chat gruppo (con fallback polling)"
+    - "Infinite scroll cursor pagination sul feed home"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Iterazione 18: scalabilità 10k+ utenti concorrenti.
+      Fase 1 DONE: WebSocket per chat, rimosso polling 4s HTTP.
+      Fase 2 DONE: indici MongoDB (compound + 2dsphere) + backfill geo.
+      Fase 3 DONE: cursor pagination su /api/groups, infinite scroll home.
+      
+      BREAKING API CHANGE (interno, il frontend è aggiornato):
+        GET /api/groups ora ritorna { items: [...], next_cursor: string|null }
+        invece di List[Group].
+      
+      NUOVI ENDPOINT:
+        WS /api/ws/groups/{group_id}?token=<session_token>
+          - Solo receive: server -> client { type: "message", data: <Message> }
+          - Client -> server: { type: "ping" } (keep-alive)
+          - Codici errore custom: 4401/4403/4404
+      
+      Test priorities:
+        Backend:
+          a) GET /api/groups?limit=5 -> {items:[..5..], next_cursor:"..."}
+          b) GET /api/groups?limit=5&cursor=<val> -> pagina successiva no overlap
+          c) GET /api/groups con lat/lon/radius_km usa geoWithin corretto
+          d) WebSocket connect senza token -> chiuso con 4401
+          e) WebSocket connect con token valido ma non partecipante -> 4403
+          f) WebSocket connect + POST /messages -> altro socket riceve broadcast
+          g) POST /messages moderation check ancora attiva (droga/armi ecc)
+          h) Backward compat: gruppi vecchi senza `geo` restano visibili
+        Frontend:
+          i) Home feed carica infinite scroll oltre 30 items
+          j) Chat in gruppo apre WS, riceve nuovi msg senza refresh
+          k) Se WS fallisce (es. proxy) fallback a polling 5s
+          l) sendMessage non crea doppi anche con WS ridelivery
+      
+      Credentials per test WebSocket:
+        Inserire in `user_sessions`: {session_token: "TEST_TOKEN_...", user_id: <existing>, expires_at: <future>}
+        Poi connect a: wss://social-activities-3.preview.emergentagent.com/api/ws/groups/<group_id>?token=TEST_TOKEN_...
