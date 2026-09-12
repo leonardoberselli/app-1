@@ -219,8 +219,16 @@ export default function Onboarding() {
         </TouchableOpacity>
 
         <Text style={styles.footnote}>
-          Il tuo account \u00e8 collegato a Google. Potrai completare foto e sesso
-          quando vuoi dalla scheda Profilo.
+          {(() => {
+            const providers = (user as any)?.auth_providers as string[] | undefined;
+            const primary =
+              providers?.includes("google")
+                ? "Google"
+                : providers?.includes("apple")
+                  ? "Apple"
+                  : "email";
+            return `Il tuo account è collegato a ${primary}. Potrai completare foto e sesso quando vuoi dalla scheda Profilo.`;
+          })()}
         </Text>
         {user?.user_id ? (
           <Text style={styles.deviceId}>ID: {user.user_id.slice(0, 12)}\u2026</Text>

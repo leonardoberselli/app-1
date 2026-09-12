@@ -92,7 +92,11 @@ export default function LoginScreen() {
   const onApple = async () => {
     setLocalError(null);
     const res = await signInWithApple();
-    if (!res.ok && res.error) setLocalError(res.error);
+    if (!res.ok) {
+      if (res.error) setLocalError(res.error);
+      return;
+    }
+    router.replace("/");
   };
 
   const onSubmitEmail = async () => {
@@ -115,7 +119,14 @@ export default function LoginScreen() {
         mode === "login"
           ? await signInWithPassword(email, password)
           : await signUpWithPassword(email, password, name);
-      if (!res.ok) setLocalError(res.error || null);
+      if (!res.ok) {
+        setLocalError(res.error || null);
+      } else {
+        // Auth context updated `user`, but this screen doesn't unmount on
+        // its own — bounce to the root so app/index.tsx routes to onboarding
+        // or the tabs based on the new user state.
+        router.replace("/");
+      }
     } finally {
       setBusy(false);
     }
