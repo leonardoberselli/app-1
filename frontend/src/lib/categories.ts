@@ -7,17 +7,18 @@ export type CategoryDef = {
 };
 
 export const CATEGORIES: CategoryDef[] = [
+  { id: "ristorante", label: "Ristorante", emoji: "🍝", color: "#DC2626" },
+  { id: "bar", label: "Bar", emoji: "🍻", color: "#F59E0B" },
+  { id: "discoteca", label: "Discoteca", emoji: "🪩", color: "#A855F7" },
+  { id: "biliardo", label: "Biliardo", emoji: "🎱", color: "#3B82F6" },
+  { id: "cinema", label: "Cinema", emoji: "🎬", color: "#6366F1" },
+  { id: "bowling", label: "Bowling", emoji: "🎳", color: "#EC4899" },
   { id: "basket", label: "Basket", emoji: "🏀", color: "#FF8A3D" },
   { id: "calcio", label: "Calcio", emoji: "⚽", color: "#4ADE80" },
   { id: "tennis", label: "Tennis", emoji: "🎾", color: "#A3E635" },
-  { id: "biliardo", label: "Biliardo", emoji: "🎱", color: "#3B82F6" },
   { id: "ping_pong", label: "Ping Pong", emoji: "🏓", color: "#F472B6" },
-  { id: "discoteca", label: "Discoteca", emoji: "🪩", color: "#A855F7" },
-  { id: "bar", label: "Bar", emoji: "🍻", color: "#F59E0B" },
   { id: "volley", label: "Volley", emoji: "🏐", color: "#EF4444" },
   { id: "padel", label: "Padel", emoji: "🥎", color: "#22D3EE" },
-  { id: "bowling", label: "Bowling", emoji: "🎳", color: "#EC4899" },
-  { id: "cinema", label: "Cinema", emoji: "🎬", color: "#6366F1" },
   { id: "viaggi", label: "Viaggi", emoji: "✈️", color: "#0EA5E9" },
   { id: "altro", label: "Altro", emoji: "🎲", color: "#8B5CF6" },
 ];
