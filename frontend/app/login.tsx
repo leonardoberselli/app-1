@@ -11,6 +11,7 @@ import {
   Platform,
   TextInput,
   KeyboardAvoidingView,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -91,6 +92,21 @@ export default function LoginScreen() {
 
   const onApple = async () => {
     setLocalError(null);
+    if (!appleAvailable) {
+      // Web / Android / Expo Go: the native module is a no-op. Tell the user
+      // where the button will actually work instead of failing silently.
+      const msg =
+        "Accedi con Apple è disponibile solo su iPhone o iPad con iOS 13+ (build reale, non Expo Go). Su questo dispositivo puoi usare Google o email/password.";
+      if (Platform.OS === "web") {
+        // Alert.alert is a noop on web — use window.alert
+        try {
+          (globalThis as any).alert?.(msg);
+        } catch {}
+      } else {
+        Alert.alert("Solo su iPhone/iPad", msg);
+      }
+      return;
+    }
     const res = await signInWithApple();
     if (!res.ok) {
       if (res.error) setLocalError(res.error);
@@ -300,7 +316,9 @@ export default function LoginScreen() {
             <View style={styles.dividerLine} />
           </View>
 
-          {/* Apple Sign-In (iOS only) */}
+          {/* Apple Sign-In: native button on iOS when the module is
+              available; custom-styled fallback on web / Android / Expo Go so
+              the user still sees the option and gets an explanation. */}
           {appleAvailable ? (
             <AppleAuthentication.AppleAuthenticationButton
               testID="apple-signin-button"
@@ -314,7 +332,19 @@ export default function LoginScreen() {
               style={styles.appleBtn}
               onPress={onApple}
             />
-          ) : null}
+          ) : (
+            <TouchableOpacity
+              testID="apple-signin-button"
+              activeOpacity={0.85}
+              onPress={onApple}
+              style={styles.appleFallbackBtn}
+            >
+              <Ionicons name="logo-apple" size={20} color="#FFFFFF" />
+              <Text style={styles.appleFallbackText}>
+                {mode === "signup" ? "Registrati con Apple" : "Accedi con Apple"}
+              </Text>
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity
             testID="google-signin-button"
@@ -487,6 +517,23 @@ const styles = StyleSheet.create({
   dividerLine: { flex: 1, height: 2, backgroundColor: "#0A0A0A" },
   dividerText: { fontSize: 12, fontWeight: "800", color: "#525252" },
   appleBtn: { height: 50, width: "100%" },
+  appleFallbackBtn: {
+    backgroundColor: "#000000",
+    borderRadius: 999,
+    paddingVertical: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    borderWidth: 2,
+    borderColor: "#000000",
+  },
+  appleFallbackText: {
+    color: "#FFFFFF",
+    fontWeight: "900",
+    fontSize: 15,
+    letterSpacing: 0.3,
+  },
   googleBtn: {
     backgroundColor: "#FFFFFF",
     borderWidth: 2,
