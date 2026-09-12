@@ -1,0 +1,32 @@
+{
+  "summary": "Post-upgrade regression test for Expo SDK 54 -> 57 (RN 0.81 -> 0.86, React 19.1 -> 19.2, TS 5.9 -> 6.0). Backend: full 17/17 pytest pass on /app/backend/tests/test_iteration18_scaling.py in 3.73s (cursor pagination limit validation 0/101 -> 422, response shape, invalid cursor tolerated, no-overlap paging, end-of-stream null cursor; geo 2dsphere narrow 5km around Milano excludes Roma AND wide 100km still excludes Roma at 477km; legacy group without `geo` still visible via Haversine fallback; all required indexes present -- groups {status,created_at}+owner_id+participants.user_id+2dsphere geo, messages {group_id,created_at}+unique message_id, reports {status,created_at}+unique report_id; WebSocket close codes 4401 missing token, 4401 malformed token, 4403 not participant, 4404 unknown group, {type:connected} on success, {type:pong} reply to ping, and broadcast to 2 concurrent sockets on third-party POST /messages; moderation still blocks 'droga' with 400). Installed versions verified: expo@57.0.22, react-native@0.86.3, react@19.2.3. Frontend Metro bundler on Expo 57: 1497 modules bundled cleanly, no red-screen, login screen renders correctly at http://localhost:3000 with viewport 375x667 (Barrio logo, BENVENUTO/A SU headline, 3 feature bullets, Accedi con Google CTA, age/regulations disclaimer). Only bundler warning is cosmetic `shadow*` -> `boxShadow` deprecation as E1 flagged. Protected route sanity: seeded a user + user_sessions row directly in Mongo, called GET /api/auth/me with Bearer token -> 200 with matching user_id and email. No regressions detected from the SDK upgrade.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "shadow* style props", "issue": "Metro warns 'shadow* style props are deprecated. Use boxShadow.' on the /login screen (cosmetic only in RN 0.86). E1 already noted this is ignorable for this test; recommend migrating shadowColor/shadowOffset/shadowOpacity/shadowRadius to boxShadow in a future iteration to silence the warning."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration18_scaling.py",
+    "/app/test_reports/pytest/pytest_iter19.xml"
+  ],
+  "action_items": [
+    "None required for this iteration. Optional: migrate remaining `shadow*` style props to `boxShadow` in components to remove the RN 0.86 deprecation warning from the Metro console.",
+    "Unchanged since Iter18: /login could redirect already-authenticated users to /(tabs) to unblock future Playwright E2E tests (mandatory Google Sign-In still gates the UI)."
+  ],
+  "critical_code_review_comments": [
+    "Package.json declares expo@^57.0.0, react@19.2.3, react-native@0.86.3, react-native-reanimated@4.5.1, react-native-worklets@0.10.1, typescript@~6.0.3, @types/react@~19.2.4 -- all consistent with SDK 57 recommended pairings.",
+    "Node installed version and Metro bundler successfully produced a 1497-module web bundle on the first try after upgrade; no missing peer-dep or ESM resolution errors.",
+    "Backend was untouched; the entire Iteration 18 pytest suite still passes without a single change to test fixtures or fixtures -- confirms the upgrade did not implicitly regress API contracts (which was the concern for the mixed React 19 + FastAPI Bearer auth stack)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (17/17)", "frontend": "boot-only (login screen renders, no red-screen); deeper UI still auth-gated by Emergent Google Sign-In as documented in Iter18"},
+  "seed_data_creation": "One transient user_it19_/sess_it19_ pair inserted only for the GET /api/auth/me sanity check and cleaned up in the same script. Iter18 fixture continues to create/cleanup its own grp_it18_/user_it18_/sess_it18_ prefixed data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Expo SDK 57 upgrade is stable end-to-end. Bundler is clean apart from cosmetic shadow*/boxShadow warnings. To exercise authenticated UI flows via Playwright the same limitation from Iter18 applies: injecting a session token into localStorage does not bypass the /login gate because `/` -> `/login` redirect races the async /api/auth/me. If needed, add a debug query-param bypass or auto-redirect authenticated users away from /login. Backend WebSocket + cursor + geo behaviour is fully covered by /app/backend/tests/test_iteration18_scaling.py -- rerun with `pytest backend/tests/test_iteration18_scaling.py -v` after any code change.",
+  "rca_of_issue": "N/A -- no regressions found from the Expo SDK 54 -> 57 upgrade."
+}

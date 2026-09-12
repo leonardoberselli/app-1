@@ -187,7 +187,7 @@ const styles = StyleSheet.create({
   entryTitle: { fontWeight: "900", color: "#0A0A0A", fontSize: 14 },
   entrySub: { color: "#525252", fontSize: 12, marginTop: 2, fontWeight: "600" },
   overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)" },
-  backdrop: { ...StyleSheet.absoluteFillObject },
+  backdrop: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
   centerBox: {
     flex: 1,
     alignItems: "center",
