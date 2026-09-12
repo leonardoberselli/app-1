@@ -15,6 +15,7 @@ export type PublicUser = {
 
 export type ApiUser = {
   user_id: string;
+  email?: string | null;
   name: string;
   picture?: string | null;
   gender?: "male" | "female" | "other" | null;
@@ -22,6 +23,8 @@ export type ApiUser = {
   profile_complete?: boolean;
   terms_version?: string | null;
   terms_accepted_at?: string | null;
+  email_verified?: boolean;
+  auth_providers?: string[];
   created_at: string;
 };
 
@@ -164,6 +167,52 @@ export const api = {
   // ---- Auth ----
   me: () => request<ApiUser>("/auth/me"),
   logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+
+  // Email + password
+  register: (payload: { email: string; password: string; name?: string }) =>
+    request<{ session_token: string; user: ApiUser; email_verification_sent: boolean }>(
+      "/auth/register",
+      { method: "POST", body: payload, auth: false },
+    ),
+  loginPassword: (payload: { email: string; password: string }) =>
+    request<{ session_token: string; user: ApiUser }>("/auth/login", {
+      method: "POST",
+      body: payload,
+      auth: false,
+    }),
+  requestPasswordReset: (email: string) =>
+    request<{ message: string }>("/auth/password/request-reset", {
+      method: "POST",
+      body: { email },
+      auth: false,
+    }),
+  confirmPasswordReset: (token: string, new_password: string) =>
+    request<{ ok: boolean }>("/auth/password/confirm-reset", {
+      method: "POST",
+      body: { token, new_password },
+      auth: false,
+    }),
+  verifyEmail: (token: string) =>
+    request<{ ok: boolean }>("/auth/verify-email", {
+      method: "POST",
+      body: { token },
+      auth: false,
+    }),
+
+  // Apple Sign-In: exchanges the identity_token minted by ASAuthorizationController
+  // for a Barrio session_token. `email` and `full_name` are only provided by
+  // Apple on the very first sign-in.
+  appleSignIn: (payload: {
+    identity_token: string;
+    email?: string | null;
+    full_name?: string | null;
+  }) =>
+    request<{ session_token: string; user: ApiUser }>("/auth/apple", {
+      method: "POST",
+      body: payload,
+      auth: false,
+    }),
+
   updateProfile: (payload: {
     name?: string;
     picture?: string;

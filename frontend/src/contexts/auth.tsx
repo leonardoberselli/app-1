@@ -9,6 +9,7 @@ import React, {
 import { Platform } from "react-native";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
+import * as AppleAuthentication from "expo-apple-authentication";
 
 import { api, ApiUser } from "@/src/lib/api";
 import { sessionStore } from "@/src/lib/session-store";
@@ -51,8 +52,29 @@ type AuthContextValue = {
   fbUser: { uid: string } | null;
   emailVerified: boolean;
   needsEmailVerification: boolean;
+  // Google (Emergent Managed).
   signIn: () => Promise<{ ok: boolean; error?: string }>;
   checkPendingSession: () => Promise<{ ok: boolean; error?: string }>;
+  // Email + password.
+  signUpWithPassword: (
+    email: string,
+    password: string,
+    name?: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  signInWithPassword: (
+    email: string,
+    password: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  requestPasswordReset: (email: string) => Promise<{ ok: boolean; error?: string }>;
+  confirmPasswordReset: (
+    token: string,
+    newPassword: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  verifyEmail: (token: string) => Promise<{ ok: boolean; error?: string }>;
+  // Apple.
+  appleAvailable: boolean;
+  signInWithApple: () => Promise<{ ok: boolean; error?: string }>;
+  // Session lifecycle.
   signOut: () => Promise<void>;
   refreshMe: () => Promise<void>;
   setUser: (u: ApiUser | null) => void;
@@ -65,11 +87,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [signingIn, setSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [appleAvailable, setAppleAvailable] = useState(false);
 
   // Captures deep-link URLs that arrive while the auth-session is open.
   // On Android, openAuthSessionAsync frequently returns `dismiss` with no URL
   // even after a successful login, so we must keep this fallback.
   const capturedUrlRef = useRef<string | null>(null);
+
+  // Apple Sign-In is iOS-only (iOS 13+); guard so the button never appears
+  // on Android/web where the native module is a no-op.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (Platform.OS !== "ios") return;
+      try {
+        const ok = await AppleAuthentication.isAvailableAsync();
+        if (!cancelled) setAppleAvailable(!!ok);
+      } catch {
+        if (!cancelled) setAppleAvailable(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const refreshMe = useCallback(async () => {
     try {
@@ -326,6 +367,144 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // ---------- Email + password ----------
+  // All three flows share the same "adopt a fresh session_token" mechanic
+  // so the auth state is single-sourced from the users collection.
+  const adoptSession = useCallback(async (token: string, u?: ApiUser) => {
+    await sessionStore.set(token);
+    (globalThis as any).__GROUPUP_SESSION_TOKEN__ = token;
+    if (u) setUser(u);
+    else await refreshMe();
+  }, [refreshMe]);
+
+  const signUpWithPassword = useCallback(
+    async (email: string, password: string, name?: string) => {
+      setAuthError(null);
+      setSigningIn(true);
+      try {
+        const data = await api.register({
+          email: email.trim().toLowerCase(),
+          password,
+          name: name?.trim() || undefined,
+        });
+        await adoptSession(data.session_token, data.user);
+        return { ok: true } as const;
+      } catch (e: any) {
+        const msg = e?.message || "Errore di registrazione";
+        setAuthError(msg);
+        return { ok: false, error: msg } as const;
+      } finally {
+        setSigningIn(false);
+      }
+    },
+    [adoptSession],
+  );
+
+  const signInWithPassword = useCallback(
+    async (email: string, password: string) => {
+      setAuthError(null);
+      setSigningIn(true);
+      try {
+        const data = await api.loginPassword({
+          email: email.trim().toLowerCase(),
+          password,
+        });
+        await adoptSession(data.session_token, data.user);
+        return { ok: true } as const;
+      } catch (e: any) {
+        const msg = e?.message || "Errore di accesso";
+        setAuthError(msg);
+        return { ok: false, error: msg } as const;
+      } finally {
+        setSigningIn(false);
+      }
+    },
+    [adoptSession],
+  );
+
+  const requestPasswordReset = useCallback(async (email: string) => {
+    try {
+      await api.requestPasswordReset(email.trim().toLowerCase());
+      return { ok: true } as const;
+    } catch (e: any) {
+      // The backend deliberately returns 200 whether or not the email exists,
+      // so any error we see here is a real network/server fault.
+      return { ok: false, error: e?.message || "Errore di rete" } as const;
+    }
+  }, []);
+
+  const confirmPasswordReset = useCallback(
+    async (token: string, newPassword: string) => {
+      try {
+        await api.confirmPasswordReset(token, newPassword);
+        // Reset invalidates all sessions server-side; make sure we don't
+        // keep a stale token in secure store.
+        await sessionStore.clear();
+        (globalThis as any).__GROUPUP_SESSION_TOKEN__ = null;
+        setUser(null);
+        return { ok: true } as const;
+      } catch (e: any) {
+        return { ok: false, error: e?.message || "Errore reset password" } as const;
+      }
+    },
+    [],
+  );
+
+  const verifyEmail = useCallback(async (token: string) => {
+    try {
+      await api.verifyEmail(token);
+      // If the user is currently logged in, refresh /me so email_verified flips true.
+      try {
+        await refreshMe();
+      } catch {}
+      return { ok: true } as const;
+    } catch (e: any) {
+      return { ok: false, error: e?.message || "Token non valido o scaduto" } as const;
+    }
+  }, [refreshMe]);
+
+  // ---------- Apple Sign-In ----------
+  const signInWithApple = useCallback(async () => {
+    setAuthError(null);
+    if (Platform.OS !== "ios") {
+      return { ok: false, error: "Apple Sign-In è disponibile solo su iOS" } as const;
+    }
+    setSigningIn(true);
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+      const identity = credential.identityToken;
+      if (!identity) {
+        return { ok: false, error: "Apple non ha restituito il token" } as const;
+      }
+      const fullName = [credential.fullName?.givenName, credential.fullName?.familyName]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      const data = await api.appleSignIn({
+        identity_token: identity,
+        email: credential.email ?? null,
+        full_name: fullName || null,
+      });
+      await adoptSession(data.session_token, data.user);
+      return { ok: true } as const;
+    } catch (e: any) {
+      // Cancelled by the user — treat as a silent no-op instead of an error.
+      if (e?.code === "ERR_REQUEST_CANCELED" || e?.code === "ERR_CANCELED") {
+        return { ok: false } as const;
+      }
+      const msg = e?.message || "Errore Apple Sign-In";
+      setAuthError(msg);
+      return { ok: false, error: msg } as const;
+    } finally {
+      setSigningIn(false);
+    }
+  }, [adoptSession]);
+
   const value: AuthContextValue = {
     user,
     loading,
@@ -333,10 +512,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authError,
     deviceId: user?.user_id ?? null,
     fbUser: user?.user_id ? { uid: user.user_id } : null,
-    emailVerified: true,
-    needsEmailVerification: false,
+    emailVerified: user?.email_verified !== false,
+    needsEmailVerification: user != null && user.email_verified === false,
     signIn,
     checkPendingSession,
+    signUpWithPassword,
+    signInWithPassword,
+    requestPasswordReset,
+    confirmPasswordReset,
+    verifyEmail,
+    appleAvailable,
+    signInWithApple,
     signOut,
     refreshMe,
     setUser,

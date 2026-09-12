@@ -5,6 +5,7 @@ from fastapi import (
     Header,
     Depends,
     Query,
+    Request,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -20,11 +21,32 @@ import uuid
 import base64
 import binascii
 import json
+import time
+import ipaddress
+import hashlib
+import secrets as py_secrets
+from collections import defaultdict, deque
+from html import escape
+from html.parser import HTMLParser
+from urllib.parse import urlparse
 import httpx
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr, field_validator
 from typing import List, Optional, Literal, Tuple, Dict, Set, Any
 from datetime import datetime, timezone, timedelta
+
+try:
+    import jwt as pyjwt  # type: ignore
+except Exception:  # pragma: no cover
+    pyjwt = None  # type: ignore
+
+try:
+    from pwdlib import PasswordHash  # type: ignore
+    _pwd_hash = PasswordHash.recommended()
+    _DUMMY_PWD_HASH = _pwd_hash.hash("__constant-dummy-pw__")
+except Exception:  # pragma: no cover
+    _pwd_hash = None
+    _DUMMY_PWD_HASH = ""
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,7 +78,7 @@ api_router = APIRouter(prefix="/api")
 
 class User(BaseModel):
     user_id: str            # Custom app id (user_{uuid_hex[:12]})
-    email: str              # Verified via Google
+    email: Optional[str] = None   # Verified via Google/Apple, or set at signup
     name: str = ""
     picture: Optional[str] = None
     gender: Optional[Literal["male", "female", "other"]] = None
@@ -65,6 +87,11 @@ class User(BaseModel):
     # Terms & liability acceptance tracking (see /api/auth/accept-terms).
     terms_version: Optional[str] = None
     terms_accepted_at: Optional[datetime] = None
+    # Multi-provider auth (Iteration 19). `email_verified` is True for Google/
+    # Apple accounts (IdP already verifies) and toggles True for password
+    # accounts only after the emailed link is confirmed.
+    email_verified: bool = True
+    auth_providers: List[str] = Field(default_factory=list)
     created_at: datetime
 
 
@@ -231,10 +258,9 @@ def _strip(d: dict) -> dict:
 
 def _user_from_doc(doc: dict) -> User:
     doc = _strip(dict(doc))
-    # Drop obsolete Firebase fields if present
-    for k in ("email_verified", "providers"):
-        doc.pop(k, None)
-    doc.setdefault("email", "")
+    # `providers` was an unused Firebase-era field; drop if lingering.
+    doc.pop("providers", None)
+    doc.setdefault("email", None)
     doc.setdefault("name", "")
     doc.setdefault("picture", None)
     doc.setdefault("gender", None)
@@ -242,6 +268,12 @@ def _user_from_doc(doc: dict) -> User:
     doc.setdefault("profile_complete", False)
     doc.setdefault("terms_version", None)
     doc.setdefault("terms_accepted_at", None)
+    # Multi-provider auth defaults for legacy Google-only rows.
+    doc.setdefault("email_verified", True)
+    doc.setdefault("auth_providers", ["google"] if doc.get("email") else [])
+    # `password_hash`, `apple_sub` are internal — never exposed in the model.
+    doc.pop("password_hash", None)
+    doc.pop("apple_sub", None)
     return User(**doc)
 
 
@@ -776,6 +808,13 @@ async def exchange_google_session(payload: GoogleSessionExchange):
             upd["name"] = google_name[:40]
         if not existing.get("picture") and google_picture:
             upd["picture"] = google_picture
+        # Ensure google is in the provider list so linked accounts stay consistent
+        providers = list(existing.get("auth_providers") or [])
+        if "google" not in providers:
+            providers.append("google")
+            upd["auth_providers"] = providers
+        if not existing.get("email_verified"):
+            upd["email_verified"] = True
         if upd:
             await db.users.update_one({"user_id": user_id}, {"$set": upd})
     else:
@@ -792,6 +831,9 @@ async def exchange_google_session(payload: GoogleSessionExchange):
                 "terms_version": None,
                 "terms_accepted_at": None,
                 "created_at": now,
+                "password_hash": None,
+                "email_verified": True,
+                "auth_providers": ["google"],
             }
         )
 
@@ -870,6 +912,647 @@ async def auth_update_me(payload: ProfileUpdate, user: User = Depends(get_curren
             array_filters=[{"p.user_id": user.user_id}],
         )
     return _user_from_doc(fresh)
+
+
+# ==================== Email/Password + Apple Auth (Iteration 19) ====================
+#
+# Providers unified into the same `users` + `user_sessions` collections used by
+# the Emergent Google Auth flow above. The `auth_providers` array tracks which
+# provider(s) a given user account has linked; new fields:
+#
+#   password_hash      Argon2id hash (via pwdlib). Nullable — Google/Apple-only
+#                      users have no password.
+#   email_verified     True once the user has confirmed the emailed link/code.
+#                      Google/Apple flows implicitly set this True because the
+#                      IdP already verifies the address; email-password signups
+#                      start False and flip True on POST /api/auth/verify-email.
+#   auth_providers[]   ["google"], ["password"], ["apple"], or any combination
+#                      after account linking.
+#   apple_sub          Apple `sub` claim (only when a user has linked Apple).
+#
+# Reset/verify tokens live in a separate `auth_tokens` collection, storing only
+# SHA-256 of the raw token. Tokens are single-use (`used_at`) and TTL-expired.
+# Never log the raw token; never return it in an API response.
+
+_JWT_SECRET = os.environ.get("JWT_SECRET_KEY", "")
+_JWT_ALG = "HS256"
+_RESET_MINUTES = int(os.environ.get("RESET_TOKEN_MINUTES", "30"))
+_VERIFY_HOURS = int(os.environ.get("VERIFY_TOKEN_HOURS", "24"))
+_PUBLIC_URL = os.environ.get("APP_PUBLIC_URL", "").rstrip("/")
+_APPLE_AUDIENCES = [
+    a.strip()
+    for a in (os.environ.get("APPLE_AUDIENCES") or "").split(",")
+    if a.strip()
+]
+
+# Password strength: min 8 chars, at least 1 letter and 1 digit.
+_PASSWORD_RE = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{8,128}$")
+
+
+def _pw_hash(raw: str) -> str:
+    if _pwd_hash is None:
+        raise HTTPException(status_code=500, detail="Password auth non disponibile")
+    return _pwd_hash.hash(raw)
+
+
+def _pw_verify(raw: str, hashed: Optional[str]) -> bool:
+    if _pwd_hash is None:
+        return False
+    # Always execute Argon2 work so unknown-email requests take the same time
+    # as wrong-password requests (mitigates timing enumeration).
+    target = hashed if hashed else _DUMMY_PWD_HASH
+    try:
+        return _pwd_hash.verify(raw, target) and bool(hashed)
+    except Exception:
+        return False
+
+
+def _sha256_hex(v: str) -> str:
+    return hashlib.sha256(v.encode("utf-8")).hexdigest()
+
+
+def _issue_session_token() -> str:
+    # Long, URL-safe token. Same shape as Emergent's tokens (matches
+    # `_SESSION_TOKEN_RE`) so the existing bearer middleware validates it.
+    return py_secrets.token_urlsafe(48)
+
+
+async def _create_session_for(user_id: str) -> str:
+    token = _issue_session_token()
+    now = _now()
+    await db.user_sessions.insert_one(
+        {
+            "session_token": token,
+            "user_id": user_id,
+            "created_at": now,
+            "expires_at": now + SESSION_LIFETIME,
+        }
+    )
+    return token
+
+
+# ---- Simple in-memory rate limiter (per process). Good enough for MVP; swap
+# to Redis when we scale horizontally.
+_RL_BUCKETS: Dict[str, deque] = defaultdict(deque)
+
+
+def _rate_limit(key: str, limit: int = 10, window_seconds: int = 900) -> bool:
+    """Sliding-window limiter. Returns True when the request is allowed."""
+    now = time.monotonic()
+    q = _RL_BUCKETS[key]
+    while q and q[0] <= now - window_seconds:
+        q.popleft()
+    if len(q) >= limit:
+        return False
+    q.append(now)
+    return True
+
+
+# ============================== Email (Emergent Resend) ==============================
+
+EMAIL_BASE_URL = "https://integrations.emergentagent.com"
+_EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY", "")
+_EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Barrio")
+_EMAIL_REPLY_TO = os.environ.get("EMAIL_REPLY_TO")
+
+_SHORTENERS = (
+    "bit.ly",
+    "tinyurl.com",
+    "t.co",
+    "is.gd",
+    "cutt.ly",
+    "goo.gl",
+    "rebrand.ly",
+)
+_CRED_ASK = (
+    "reply with your password",
+    "reply with the code",
+    "send your password",
+    "cvv",
+    "send us your password",
+    "enter your password below",
+    "confirm your card number",
+    "your full card number",
+    "seed phrase",
+    "recovery phrase",
+    "verify your card",
+    "social security number",
+    "confirm your bank details",
+)
+_HOSTISH_RE = re.compile(r"\b(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})", re.I)
+
+
+def _email_host_ok(host: str) -> bool:
+    if not host or "xn--" in host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return not any(host == s or host.endswith("." + s) for s in _SHORTENERS)
+
+
+def _email_same_site(shown: str, real: str) -> bool:
+    return shown == real or real.endswith("." + shown) or shown.endswith("." + real)
+
+
+class _EmailScan(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tags: Set[str] = set()
+        self.urls: List[str] = []
+        self.anchors: List[Tuple[str, str]] = []
+        self._href: Optional[str] = None
+        self._text: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs):  # type: ignore[override]
+        self.tags.add(tag.lower())
+        self.urls += [v for k, v in attrs if k.lower() in ("href", "src") and v]
+        if tag.lower() == "a":
+            self._href = dict((k.lower(), v) for k, v in attrs).get("href")
+            self._text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "a" and self._href is not None:
+            self.anchors.append((self._href, "".join(self._text)))
+            self._href = None
+            self._text = []
+
+
+def _assert_safe_email(subject: str, html: str) -> None:
+    scan = _EmailScan()
+    scan.feed(html)
+    if scan.tags & {"form", "input", "textarea", "select"}:
+        raise ValueError("No forms or input fields in email (G2)")
+    body = f"{subject}\n{html}".lower()
+    for p in _CRED_ASK:
+        if p in body:
+            raise ValueError(f"Email asks for credentials: {p!r} (G2)")
+    for url in scan.urls:
+        low = url.strip().lower()
+        if low.startswith(("mailto:", "tel:", "cid:", "#")):
+            continue
+        if not low.startswith("https://"):
+            raise ValueError(f"Non-https link/asset: {url!r} (G3)")
+        parsed = urlparse(low)
+        host = parsed.hostname or ""
+        if not _email_host_ok(host) or parsed.username is not None:
+            raise ValueError(f"Unsafe URL: {url!r} (G3)")
+    for href, text in scan.anchors:
+        real = urlparse(href.strip().lower()).hostname or ""
+        if not real:
+            continue
+        for m in _HOSTISH_RE.finditer(text):
+            if not _email_same_site(m.group(1).lower(), real):
+                raise ValueError(f"Anchor text host mismatch: {m.group(1)!r} vs {real!r} (G3)")
+
+
+async def _send_email(*, to: str, subject: str, html: str, reply_to: Optional[str] = None) -> Optional[str]:
+    """Send transactional email via Emergent Resend. Never call from a route
+    that receives arbitrary html/subject/recipient from user input (see G4)."""
+    _assert_safe_email(subject, html)
+    if not _EMAIL_KEY:
+        logger.warning("EMERGENT_EMAIL_KEY not configured — skipping send")
+        return None
+    payload: Dict[str, Any] = {
+        "to": [to],
+        "subject": subject,
+        "html": html,
+        "from_name": _EMAIL_FROM_NAME,
+    }
+    r = reply_to or _EMAIL_REPLY_TO
+    if r:
+        payload["contact_email"] = r
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{EMAIL_BASE_URL}/api/v1/email/send",
+                headers={"X-Email-Key": _EMAIL_KEY},
+                json=payload,
+            )
+        resp.raise_for_status()
+        return (resp.json() or {}).get("id")
+    except httpx.HTTPStatusError as e:
+        logger.error("Email send failed: %s %s", e.response.status_code, e.response.text[:200])
+        return None
+    except Exception as e:
+        logger.error("Email send error: %s", e)
+        return None
+
+
+# ---- Templates. Server-side, never mixed with request input except via escape().
+
+def _reset_email_html(user_name: str, reset_link: str) -> str:
+    safe_name = escape(user_name or "there")
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
+        '<tr><td style="padding:24px;font-family:Arial,sans-serif;color:#111">'
+        f'<h2 style="margin:0 0 12px 0">Reimposta la tua password</h2>'
+        f'<p>Ciao {safe_name},</p>'
+        f'<p>Abbiamo ricevuto una richiesta di reimpostazione della password '
+        f'per il tuo account Barrio. Il link è valido per {_RESET_MINUTES} minuti '
+        f'e può essere usato una sola volta.</p>'
+        f'<p style="margin:24px 0"><a href="{escape(reset_link)}" '
+        f'style="background:#FF4747;color:#fff;padding:12px 20px;'
+        f'text-decoration:none;border-radius:8px;font-weight:bold">'
+        f'Reimposta password</a></p>'
+        f'<p style="font-size:14px;color:#444">Se non hai richiesto tu il reset, '
+        f'puoi ignorare questa email — la tua password resta invariata.</p>'
+        f'<hr style="border:none;border-top:1px solid #eee;margin:24px 0">'
+        f'<p style="font-size:12px;color:#888">Inviato da Barrio. '
+        f'Non chiediamo mai la tua password o codici via email.</p>'
+        '</td></tr></table>'
+    )
+
+
+def _verify_email_html(user_name: str, verify_link: str) -> str:
+    safe_name = escape(user_name or "there")
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
+        '<tr><td style="padding:24px;font-family:Arial,sans-serif;color:#111">'
+        f'<h2 style="margin:0 0 12px 0">Benvenuto su Barrio</h2>'
+        f'<p>Ciao {safe_name},</p>'
+        f'<p>Grazie per esserti registrato! Per completare la registrazione, '
+        f'conferma il tuo indirizzo email cliccando sul link qui sotto '
+        f'(valido {_VERIFY_HOURS} ore).</p>'
+        f'<p style="margin:24px 0"><a href="{escape(verify_link)}" '
+        f'style="background:#FF4747;color:#fff;padding:12px 20px;'
+        f'text-decoration:none;border-radius:8px;font-weight:bold">'
+        f'Verifica email</a></p>'
+        f'<hr style="border:none;border-top:1px solid #eee;margin:24px 0">'
+        f'<p style="font-size:12px;color:#888">Inviato da Barrio. '
+        f'Se non hai creato tu questo account, ignora questa email.</p>'
+        '</td></tr></table>'
+    )
+
+
+# ============================== Pydantic models ==============================
+
+class RegisterIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    name: Optional[str] = Field(default=None, max_length=40)
+
+    @field_validator("password")
+    @classmethod
+    def _strong(cls, v: str) -> str:
+        if not _PASSWORD_RE.fullmatch(v):
+            raise ValueError("Password: minimo 8 caratteri con almeno una lettera e un numero")
+        return v
+
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=256)
+
+
+class RequestResetIn(BaseModel):
+    email: EmailStr
+
+
+class ConfirmResetIn(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def _strong(cls, v: str) -> str:
+        if not _PASSWORD_RE.fullmatch(v):
+            raise ValueError("Password: minimo 8 caratteri con almeno una lettera e un numero")
+        return v
+
+
+class VerifyEmailIn(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+
+
+class AppleSignInIn(BaseModel):
+    identity_token: str = Field(min_length=20, max_length=8192)
+    # Provided only on the FIRST sign-in by Apple. Later sign-ins send these as null.
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = Field(default=None, max_length=80)
+
+
+# ============================== Auth tokens helpers ==============================
+
+async def _issue_auth_token(user_id: str, kind: str, ttl: timedelta) -> str:
+    raw = py_secrets.token_urlsafe(48)
+    await db.auth_tokens.insert_one(
+        {
+            "user_id": user_id,
+            "kind": kind,
+            "token_hash": _sha256_hex(raw),
+            "created_at": _now(),
+            "expires_at": _now() + ttl,
+            "used_at": None,
+        }
+    )
+    return raw
+
+
+async def _consume_auth_token(kind: str, raw: str) -> Optional[str]:
+    """Atomically mark a token used and return its user_id, or None if the
+    token is unknown/expired/already used."""
+    record = await db.auth_tokens.find_one_and_update(
+        {
+            "kind": kind,
+            "token_hash": _sha256_hex(raw),
+            "used_at": None,
+            "expires_at": {"$gt": _now()},
+        },
+        {"$set": {"used_at": _now()}},
+        return_document=True,
+    )
+    if not record:
+        return None
+    return record.get("user_id")
+
+
+# ============================== Endpoints ==============================
+
+@api_router.post("/auth/register", response_model=dict, status_code=201)
+async def auth_register(payload: RegisterIn, request: Request):
+    ip = (request.client.host if request.client else "unknown") or "unknown"
+    if not _rate_limit(f"reg:ip:{ip}", limit=10, window_seconds=3600):
+        raise HTTPException(status_code=429, detail="Troppi tentativi, riprova tra un'ora")
+    email = payload.email.strip().lower()
+    name = (payload.name or "").strip()[:40]
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    now = _now()
+    if existing:
+        # If the user has already linked a password, we can't overwrite it —
+        # ask them to log in instead.
+        if existing.get("password_hash"):
+            raise HTTPException(status_code=409, detail="Account già registrato: accedi con email e password")
+        # Google/Apple-only account: attach a password to it so the two
+        # providers coexist. Requires the caller to complete verification via
+        # the emailed link before we mark auth_providers += ["password"].
+        user_id = existing["user_id"]
+        await db.users.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "password_hash": _pw_hash(payload.password),
+                    "name": existing.get("name") or name,
+                },
+            },
+        )
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one(
+            {
+                "user_id": user_id,
+                "email": email,
+                "name": name,
+                "picture": None,
+                "gender": None,
+                "age": None,
+                "profile_complete": False,
+                "terms_version": None,
+                "terms_accepted_at": None,
+                "created_at": now,
+                "password_hash": _pw_hash(payload.password),
+                "email_verified": False,
+                "auth_providers": ["password"],
+            }
+        )
+
+    # Send verification email (fire-and-forget so signup latency stays low).
+    verify_token = await _issue_auth_token(user_id, "verify_email", timedelta(hours=_VERIFY_HOURS))
+    if _PUBLIC_URL:
+        verify_link = f"{_PUBLIC_URL}/verify-email?token={verify_token}"
+        try:
+            asyncio.create_task(
+                _send_email(
+                    to=email,
+                    subject="Verifica il tuo indirizzo email",
+                    html=_verify_email_html(name, verify_link),
+                )
+            )
+        except Exception as exc:
+            logger.warning("verify email dispatch failed: %s", exc)
+
+    # Immediately issue a session so signup lands the user in the app; they
+    # get a nag banner until email_verified flips True.
+    token = await _create_session_for(user_id)
+    fresh = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    return {
+        "session_token": token,
+        "user": _user_from_doc(fresh).model_dump(mode="json"),
+        "email_verification_sent": True,
+    }
+
+
+@api_router.post("/auth/login", response_model=dict)
+async def auth_login(payload: LoginIn, request: Request):
+    ip = (request.client.host if request.client else "unknown") or "unknown"
+    email = payload.email.strip().lower()
+    if not _rate_limit(f"login:ip:{ip}", limit=15, window_seconds=900):
+        raise HTTPException(status_code=429, detail="Troppi tentativi, riprova tra 15 minuti")
+    if not _rate_limit(f"login:em:{email}", limit=10, window_seconds=900):
+        raise HTTPException(status_code=429, detail="Troppi tentativi, riprova tra 15 minuti")
+
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    hashed = user.get("password_hash") if user else None
+    ok = _pw_verify(payload.password, hashed)
+    if not user or not ok:
+        # Same generic message + timing (dummy hash) to avoid enumeration.
+        raise HTTPException(status_code=401, detail="Email o password non corretti")
+
+    token = await _create_session_for(user["user_id"])
+    return {
+        "session_token": token,
+        "user": _user_from_doc(user).model_dump(mode="json"),
+    }
+
+
+@api_router.post("/auth/password/request-reset", response_model=dict)
+async def auth_request_reset(payload: RequestResetIn, request: Request):
+    ip = (request.client.host if request.client else "unknown") or "unknown"
+    if not _rate_limit(f"reset:ip:{ip}", limit=10, window_seconds=3600):
+        # Silent — we don't want to reveal that the endpoint is hot.
+        return {"message": "Se l'account esiste, riceverai un'email con le istruzioni per il reset."}
+    email = payload.email.strip().lower()
+    user = await db.users.find_one(
+        {"email": email, "password_hash": {"$ne": None}}, {"_id": 0}
+    )
+    if user:
+        raw = await _issue_auth_token(user["user_id"], "reset_password", timedelta(minutes=_RESET_MINUTES))
+        if _PUBLIC_URL:
+            reset_link = f"{_PUBLIC_URL}/reset-password?token={raw}"
+            try:
+                asyncio.create_task(
+                    _send_email(
+                        to=email,
+                        subject="Reimposta la tua password Barrio",
+                        html=_reset_email_html(user.get("name") or "", reset_link),
+                    )
+                )
+            except Exception as exc:
+                logger.warning("reset email dispatch failed: %s", exc)
+    # Deliberately identical response whether or not the email exists.
+    return {"message": "Se l'account esiste, riceverai un'email con le istruzioni per il reset."}
+
+
+@api_router.post("/auth/password/confirm-reset", response_model=dict)
+async def auth_confirm_reset(payload: ConfirmResetIn):
+    user_id = await _consume_auth_token("reset_password", payload.token)
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Token non valido o scaduto")
+    new_hash = _pw_hash(payload.new_password)
+    upd: Dict[str, Any] = {"password_hash": new_hash}
+    # First time a Google/Apple-only account sets a password → mark provider.
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0}) or {}
+    providers = list(user.get("auth_providers") or [])
+    if "password" not in providers:
+        providers.append("password")
+        upd["auth_providers"] = providers
+    await db.users.update_one({"user_id": user_id}, {"$set": upd})
+    # Invalidate all existing sessions after a password change.
+    await db.user_sessions.delete_many({"user_id": user_id})
+    return {"ok": True}
+
+
+@api_router.post("/auth/verify-email", response_model=dict)
+async def auth_verify_email(payload: VerifyEmailIn):
+    user_id = await _consume_auth_token("verify_email", payload.token)
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Token non valido o scaduto")
+    await db.users.update_one({"user_id": user_id}, {"$set": {"email_verified": True}})
+    return {"ok": True}
+
+
+# ============================== Apple Sign-In ==============================
+
+_APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+_apple_jwks_cache: Dict[str, Any] = {"fetched_at": 0.0, "keys": {}}
+
+
+async def _apple_jwks_key_for(kid: str) -> Optional[Dict[str, Any]]:
+    """Return the JWK matching `kid`, refreshing the cache at most every 60s."""
+    now = time.monotonic()
+    if now - _apple_jwks_cache["fetched_at"] > 60 and _apple_jwks_cache.get("keys", {}).get(kid) is None:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(_APPLE_JWKS_URL)
+            resp.raise_for_status()
+            keys = (resp.json() or {}).get("keys") or []
+            _apple_jwks_cache["keys"] = {k.get("kid"): k for k in keys if k.get("kid")}
+            _apple_jwks_cache["fetched_at"] = now
+        except Exception as exc:
+            logger.warning("Apple JWKS fetch failed: %s", exc)
+    return _apple_jwks_cache["keys"].get(kid)
+
+
+async def _verify_apple_identity_token(identity_token: str) -> Dict[str, Any]:
+    if pyjwt is None:
+        raise HTTPException(status_code=500, detail="Apple auth non configurato")
+    if not _APPLE_AUDIENCES:
+        raise HTTPException(status_code=500, detail="APPLE_AUDIENCES non impostato")
+    try:
+        unverified = pyjwt.get_unverified_header(identity_token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Identity token Apple malformato")
+    kid = unverified.get("kid")
+    if not kid:
+        raise HTTPException(status_code=401, detail="Identity token Apple senza kid")
+    jwk = await _apple_jwks_key_for(kid)
+    if not jwk:
+        raise HTTPException(status_code=401, detail="Chiave Apple non trovata")
+    try:
+        # Try each configured audience — build usually uses the bundle id,
+        # Expo Go uses host.exp.Exponent.
+        public_key = pyjwt.algorithms.RSAAlgorithm.from_jwk(jwk)
+        last_err: Optional[Exception] = None
+        for aud in _APPLE_AUDIENCES:
+            try:
+                claims = pyjwt.decode(
+                    identity_token,
+                    public_key,
+                    algorithms=["RS256"],
+                    audience=aud,
+                    issuer="https://appleid.apple.com",
+                )
+                return claims
+            except Exception as e:  # pragma: no cover
+                last_err = e
+        raise last_err or ValueError("audience mismatch")
+    except Exception as exc:
+        logger.warning("Apple token verify failed: %s", exc)
+        raise HTTPException(status_code=401, detail="Identity token Apple non valido")
+
+
+@api_router.post("/auth/apple", response_model=dict)
+async def auth_apple(payload: AppleSignInIn):
+    claims = await _verify_apple_identity_token(payload.identity_token)
+    apple_sub = str(claims.get("sub") or "").strip()
+    if not apple_sub:
+        raise HTTPException(status_code=401, detail="Sub Apple mancante")
+    # Apple returns `email` on the first sign-in only; on subsequent flows we
+    # rely on the value we persisted the first time.
+    token_email = (claims.get("email") or "").strip().lower() or None
+    first_time_email = (payload.email or "").strip().lower() or None
+    email = token_email or first_time_email
+    provided_name = (payload.full_name or "").strip()[:40]
+
+    now = _now()
+    # Prefer matching by apple_sub (stable). Fall back to email so a user who
+    # signed up via email/Google earlier can link Apple to the same account.
+    user = await db.users.find_one({"apple_sub": apple_sub}, {"_id": 0})
+    if not user and email:
+        user = await db.users.find_one({"email": email}, {"_id": 0})
+
+    if user:
+        user_id = user["user_id"]
+        upd: Dict[str, Any] = {}
+        if not user.get("apple_sub"):
+            upd["apple_sub"] = apple_sub
+        # Apple has verified this email.
+        if email and (user.get("email") or "") == "":
+            upd["email"] = email
+        if email and not user.get("email_verified"):
+            upd["email_verified"] = True
+        providers = list(user.get("auth_providers") or [])
+        if "apple" not in providers:
+            providers.append("apple")
+            upd["auth_providers"] = providers
+        if not user.get("name") and provided_name:
+            upd["name"] = provided_name
+        if upd:
+            await db.users.update_one({"user_id": user_id}, {"$set": upd})
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one(
+            {
+                "user_id": user_id,
+                "email": email,
+                "apple_sub": apple_sub,
+                "name": provided_name or "",
+                "picture": None,
+                "gender": None,
+                "age": None,
+                "profile_complete": False,
+                "terms_version": None,
+                "terms_accepted_at": None,
+                "created_at": now,
+                "password_hash": None,
+                "email_verified": True,
+                "auth_providers": ["apple"],
+            }
+        )
+
+    token = await _create_session_for(user_id)
+    fresh = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    return {
+        "session_token": token,
+        "user": _user_from_doc(fresh).model_dump(mode="json"),
+    }
 
 
 async def _delete_user_cascade(user_id: str) -> dict:
@@ -1873,6 +2556,13 @@ async def on_startup():
     # users
     await _idx(db.users, "user_id", unique=True)
     await _idx(db.users, "email", unique=True, sparse=True)
+    await _idx(db.users, "apple_sub", unique=True, sparse=True)
+    # auth_tokens: single-use email verification and password reset tokens.
+    # TTL on `expires_at` auto-purges spent/expired records; the token_hash
+    # index makes consume look-ups O(1).
+    await _idx(db.auth_tokens, "token_hash", unique=True)
+    await _idx(db.auth_tokens, "expires_at", expireAfterSeconds=0)
+    await _idx(db.auth_tokens, [("user_id", 1), ("kind", 1)])
     # groups: primary key + feed queries
     await _idx(db.groups, "group_id", unique=True)
     # Compound: default feed sort filters by status + created_at.
