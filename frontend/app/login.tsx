@@ -37,7 +37,6 @@ export default function LoginScreen() {
     authError,
     signInWithPassword,
     signUpWithPassword,
-    appleAvailable,
     signInWithApple,
   } = useAuth();
   const router = useRouter();
@@ -92,13 +91,15 @@ export default function LoginScreen() {
 
   const onApple = async () => {
     setLocalError(null);
-    if (!appleAvailable) {
-      // Web / Android / Expo Go: the native module is a no-op. Tell the user
-      // where the button will actually work instead of failing silently.
+    // On iOS we always attempt the native flow. `expo-apple-authentication`
+    // ships inside Expo Go on iOS 13+ and the native module handles the
+    // "not supported" case with a proper error we can catch below — no
+    // `isAvailableAsync()` gate needed (avoids a race where the fallback
+    // button appears before the async check resolves).
+    if (Platform.OS !== "ios") {
       const msg =
-        "Accedi con Apple è disponibile solo su iPhone o iPad con iOS 13+ (build reale, non Expo Go). Su questo dispositivo puoi usare Google o email/password.";
+        "Accedi con Apple è disponibile solo su iPhone o iPad con iOS 13+. Su questo dispositivo puoi usare Google o email/password.";
       if (Platform.OS === "web") {
-        // Alert.alert is a noop on web — use window.alert
         try {
           (globalThis as any).alert?.(msg);
         } catch {}
@@ -109,7 +110,12 @@ export default function LoginScreen() {
     }
     const res = await signInWithApple();
     if (!res.ok) {
-      if (res.error) setLocalError(res.error);
+      if (res.error) {
+        // Surface Apple/backend errors so the user can screenshot & report
+        // instead of a silent failure.
+        setLocalError(res.error);
+        Alert.alert("Apple Sign-In fallito", res.error);
+      }
       return;
     }
     router.replace("/");
@@ -316,10 +322,15 @@ export default function LoginScreen() {
             <View style={styles.dividerLine} />
           </View>
 
-          {/* Apple Sign-In: native button on iOS when the module is
-              available; custom-styled fallback on web / Android / Expo Go so
-              the user still sees the option and gets an explanation. */}
-          {appleAvailable ? (
+          {/* Apple Sign-In:
+              - iOS: always render the native Apple button (works in Expo Go
+                and in a real build on iOS 13+). Do NOT gate this on the
+                async `isAvailableAsync` check — that produced a race where
+                the fallback flashed first and users tapped it before the
+                promise resolved.
+              - Web / Android: custom-styled fallback button that tells the
+                user Apple Sign-In only works on iPhone/iPad. */}
+          {Platform.OS === "ios" ? (
             <AppleAuthentication.AppleAuthenticationButton
               testID="apple-signin-button"
               buttonType={

@@ -471,6 +471,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     setSigningIn(true);
     try {
+      // Double-check availability at the last moment. Some iOS
+      // configurations (e.g. running on an iPad without Apple ID configured)
+      // will throw here instead of returning `false`.
+      try {
+        const ok = await AppleAuthentication.isAvailableAsync();
+        if (!ok) {
+          return {
+            ok: false,
+            error:
+              "Apple Sign-In non è disponibile su questo dispositivo. Verifica di aver effettuato l'accesso ad un Apple ID nelle impostazioni iOS.",
+          } as const;
+        }
+      } catch {
+        // ignore — the actual signInAsync call below will surface any
+        // deeper issue with a specific error code.
+      }
       const credential = await AppleAuthentication.signInAsync({
         requestedScopes: [
           AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
@@ -479,7 +495,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       const identity = credential.identityToken;
       if (!identity) {
-        return { ok: false, error: "Apple non ha restituito il token" } as const;
+        return { ok: false, error: "Apple non ha restituito il token di identità" } as const;
       }
       const fullName = [credential.fullName?.givenName, credential.fullName?.familyName]
         .filter(Boolean)
@@ -497,7 +513,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (e?.code === "ERR_REQUEST_CANCELED" || e?.code === "ERR_CANCELED") {
         return { ok: false } as const;
       }
-      const msg = e?.message || "Errore Apple Sign-In";
+      // Map common Apple / backend errors to human-readable messages.
+      let msg = e?.message || "Errore Apple Sign-In";
+      if (e?.code === "ERR_REQUEST_NOT_HANDLED") {
+        msg =
+          "iOS non ha completato la richiesta ad Apple. Riprova tra qualche secondo o verifica la tua connessione.";
+      } else if (e?.code === "ERR_REQUEST_FAILED") {
+        msg = "Richiesta Apple fallita. Riprova.";
+      } else if (e?.code === "ERR_INVALID_RESPONSE") {
+        msg = "Risposta Apple non valida. Riprova o usa Google/email.";
+      } else if (/Identity token Apple non valido/i.test(msg)) {
+        msg =
+          "Il token Apple non è stato accettato dal server. Se stai usando Expo Go, prova con una build reale (TestFlight).";
+      }
+      console.warn("signInWithApple failed", e?.code, e?.message);
       setAuthError(msg);
       return { ok: false, error: msg } as const;
     } finally {
