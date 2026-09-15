@@ -119,7 +119,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (e: any) {
       console.warn("refreshMe failed", e?.message || e);
       // 401 → session expired/revoked → drop it locally.
-      if (typeof e?.message === "string" && /session|token/i.test(e.message)) {
+      // 403 with suspension → account has been banned; wipe the session
+      // and surface the message via authError so the login screen can
+      // show it (backend already killed the session server-side).
+      const status = e?.status;
+      const suspended = e?.detail && typeof e.detail === "object" && e.detail.suspended === true;
+      if (status === 401 || status === 403 || suspended) {
+        await sessionStore.clear();
+        (globalThis as any).__GROUPUP_SESSION_TOKEN__ = null;
+        setUser(null);
+        if (suspended && typeof e?.message === "string") {
+          setAuthError(e.message);
+        }
+      } else if (typeof e?.message === "string" && /session|token/i.test(e.message)) {
         await sessionStore.clear();
         (globalThis as any).__GROUPUP_SESSION_TOKEN__ = null;
         setUser(null);

@@ -240,6 +240,66 @@ export default function GroupDetail() {
     }
   };
 
+  const doKick = useCallback(
+    async (targetUserId: string, reason: string) => {
+      if (!id) return;
+      try {
+        setActing(true);
+        const g = await api.kickParticipant(id, targetUserId, reason);
+        setGroup(g);
+      } catch (e: any) {
+        const msg = e?.message || "Errore nell'espulsione del partecipante";
+        if (Platform.OS === "web") {
+          try {
+            (globalThis as any).alert?.(msg);
+          } catch {}
+        } else {
+          Alert.alert("Espulsione fallita", msg);
+        }
+      } finally {
+        setActing(false);
+      }
+    },
+    [id],
+  );
+
+  const confirmKick = useCallback(
+    (targetUserId: string, targetName: string) => {
+      const title = "Espellere questo partecipante?";
+      const msg = `${targetName} verrà rimosso dal gruppo e non potrà più rientrare. I suoi messaggi in questo gruppo saranno cancellati.`;
+      if (Platform.OS === "web") {
+        try {
+          const ok = (globalThis as any).confirm?.(`${title}\n\n${msg}`);
+          if (ok) void doKick(targetUserId, "");
+        } catch {}
+        return;
+      }
+      Alert.prompt?.(
+        title,
+        `${msg}\n\nMotivo (opzionale, visibile agli altri):`,
+        [
+          { text: "Annulla", style: "cancel" },
+          {
+            text: "Espelli",
+            style: "destructive",
+            onPress: (reason?: string) => void doKick(targetUserId, (reason || "").trim()),
+          },
+        ],
+        "plain-text",
+        "",
+      ) ??
+        Alert.alert(title, msg, [
+          { text: "Annulla", style: "cancel" },
+          {
+            text: "Espelli",
+            style: "destructive",
+            onPress: () => void doKick(targetUserId, ""),
+          },
+        ]);
+    },
+    [doKick],
+  );
+
   const sendMessage = async () => {
     const text = draft.trim();
     if (!text || !deviceId || !id) return;
@@ -395,30 +455,48 @@ export default function GroupDetail() {
             {group.participants.map((p) => {
               const canView = isParticipant || p.user_id === user?.user_id;
               const Wrapper: any = canView ? TouchableOpacity : View;
+              const canKick =
+                isOwner && p.user_id !== user?.user_id && p.user_id !== group.owner_id;
               return (
-                <Wrapper
+                <View
                   key={p.user_id}
-                  testID={`participant-${p.user_id}`}
-                  activeOpacity={canView ? 0.7 : 1}
-                  onPress={
-                    canView ? () => router.push(`/user/${p.user_id}`) : undefined
-                  }
-                  style={styles.participant}
+                  style={styles.participantRow}
+                  testID={`participant-row-${p.user_id}`}
                 >
-                  {p.picture ? (
-                    <Image source={{ uri: p.picture }} style={styles.partAvatar} />
-                  ) : (
-                    <View style={[styles.partAvatar, styles.partFallback]}>
-                      <Text style={{ fontWeight: "900" }}>
-                        {p.name?.charAt(0).toUpperCase()}
-                      </Text>
-                    </View>
+                  <Wrapper
+                    testID={`participant-${p.user_id}`}
+                    activeOpacity={canView ? 0.7 : 1}
+                    onPress={
+                      canView ? () => router.push(`/user/${p.user_id}`) : undefined
+                    }
+                    style={[styles.participant, canKick && { paddingRight: 34 }]}
+                  >
+                    {p.picture ? (
+                      <Image source={{ uri: p.picture }} style={styles.partAvatar} />
+                    ) : (
+                      <View style={[styles.partAvatar, styles.partFallback]}>
+                        <Text style={{ fontWeight: "900" }}>
+                          {p.name?.charAt(0).toUpperCase()}
+                        </Text>
+                      </View>
+                    )}
+                    <Text style={styles.partName} numberOfLines={1}>
+                      {p.user_id === group.owner_id ? "👑 " : ""}
+                      {p.name}
+                    </Text>
+                  </Wrapper>
+                  {canKick && (
+                    <TouchableOpacity
+                      testID={`kick-${p.user_id}`}
+                      style={styles.kickBtn}
+                      onPress={() => confirmKick(p.user_id, p.name || "")}
+                      accessibilityLabel={`Espelli ${p.name || "partecipante"}`}
+                      hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                    >
+                      <Ionicons name="close-circle" size={22} color="#DC2626" />
+                    </TouchableOpacity>
                   )}
-                  <Text style={styles.partName} numberOfLines={1}>
-                    {p.user_id === group.owner_id ? "👑 " : ""}
-                    {p.name}
-                  </Text>
-                </Wrapper>
+                </View>
               );
             })}
           </View>
@@ -679,8 +757,12 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontStyle: "italic",
   },
-  participant: {
+  participantRow: {
     width: "30%",
+    position: "relative",
+  },
+  participant: {
+    width: "100%",
     alignItems: "center",
     gap: 6,
     backgroundColor: "#FFF",
@@ -688,6 +770,14 @@ const styles = StyleSheet.create({
     borderColor: "#0A0A0A",
     borderRadius: 16,
     padding: 8,
+  },
+  kickBtn: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    padding: 2,
   },
   partAvatar: { width: 48, height: 48, borderRadius: 24, borderWidth: 2, borderColor: "#000" },
   partFallback: { backgroundColor: "#FFE600", alignItems: "center", justifyContent: "center" },

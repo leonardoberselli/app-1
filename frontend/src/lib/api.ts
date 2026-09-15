@@ -157,8 +157,26 @@ async function request<T>(
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    const detail = (data && (data.detail || data.message)) || res.statusText;
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    // FastAPI can return either a plain string in `detail` or a structured
+    // object (e.g. suspension payload: {message, suspended, until, reason}).
+    // Prefer a human-readable message when the object exposes one, and
+    // stash the raw payload on the Error for callers that need to react
+    // (e.g. show a "Sei sospeso fino al …" banner).
+    const rawDetail = data && (data.detail ?? data.message);
+    let msg: string;
+    if (typeof rawDetail === "string") {
+      msg = rawDetail;
+    } else if (rawDetail && typeof rawDetail === "object" && typeof (rawDetail as any).message === "string") {
+      msg = (rawDetail as any).message;
+    } else if (rawDetail) {
+      msg = JSON.stringify(rawDetail);
+    } else {
+      msg = res.statusText || `HTTP ${res.status}`;
+    }
+    const err: any = new Error(msg);
+    err.status = res.status;
+    err.detail = rawDetail;
+    throw err;
   }
   return data as T;
 }
@@ -258,6 +276,11 @@ export const api = {
     request<ApiGroup>(`/groups/${id}/join`, { method: "POST" }),
   leaveGroup: (id: string) =>
     request<ApiGroup>(`/groups/${id}/leave`, { method: "POST" }),
+  kickParticipant: (id: string, user_id: string, reason: string = "") =>
+    request<ApiGroup>(`/groups/${id}/kick`, {
+      method: "POST",
+      body: { user_id, reason },
+    }),
   deleteGroup: (id: string) =>
     request<{ ok: boolean }>(`/groups/${id}`, { method: "DELETE" }),
   myGroups: () =>
@@ -341,6 +364,32 @@ export const api = {
     request<{ ok: boolean; deleted_groups: string[] }>(
       `/admin/users/${user_id}`,
       { method: "DELETE", admin: true, auth: false },
+    ),
+  adminGetUser: (user_id: string) =>
+    request<{
+      user_id: string;
+      email: string | null;
+      name: string | null;
+      picture: string | null;
+      created_at: string | null;
+      suspension_active: boolean;
+      suspension: { until: string | null; reason: string; at: string } | null;
+    }>(`/admin/users/${user_id}`, { admin: true, auth: false }),
+  adminSuspendUser: (user_id: string, days: number | null, reason: string = "") =>
+    request<{
+      ok: boolean;
+      user_id: string;
+      suspension: { at: string; until: string | null; reason: string; by: string };
+    }>(`/admin/users/${user_id}/suspend`, {
+      method: "POST",
+      body: { days, reason },
+      admin: true,
+      auth: false,
+    }),
+  adminUnsuspendUser: (user_id: string) =>
+    request<{ ok: boolean; user_id: string }>(
+      `/admin/users/${user_id}/unsuspend`,
+      { method: "POST", admin: true, auth: false },
     ),
 };
 

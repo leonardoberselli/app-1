@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Alert,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -149,6 +150,113 @@ export default function AdminScreen() {
               await load();
             } catch (e: any) {
               Alert.alert("Errore", e?.message || "Eliminazione fallita");
+            } finally {
+              setBusyId(null);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const suspendUser = (userId: string) => {
+    const doSuspend = async (days: number | null, reason: string) => {
+      try {
+        setBusyId(userId);
+        const res = await api.adminSuspendUser(userId, days, reason);
+        const until = res.suspension.until;
+        const untilLabel = until
+          ? new Date(until).toLocaleDateString("it-IT", {
+              day: "2-digit",
+              month: "2-digit",
+              year: "numeric",
+            })
+          : "per sempre";
+        Alert.alert(
+          "Utente sospeso",
+          `Sospensione attiva fino a: ${untilLabel}\nL'utente è stato disconnesso da tutti i dispositivi.`,
+        );
+        await load();
+      } catch (e: any) {
+        Alert.alert("Errore", e?.message || "Sospensione fallita");
+      } finally {
+        setBusyId(null);
+      }
+    };
+
+    const promptReason = (days: number | null, label: string) => {
+      const runWith = (reason: string) => doSuspend(days, reason);
+      if (Platform.OS === "web") {
+        try {
+          const reason = (globalThis as any).prompt?.(
+            `Motivo della sospensione (${label}), opzionale:`,
+            "",
+          );
+          if (reason !== null && reason !== undefined) runWith(reason.trim());
+        } catch {}
+        return;
+      }
+      Alert.prompt?.(
+        `Sospendi ${label}`,
+        "Motivo (opzionale, non visibile all'utente):",
+        [
+          { text: "Annulla", style: "cancel" },
+          {
+            text: "Conferma",
+            style: "destructive",
+            onPress: (reason?: string) => runWith((reason || "").trim()),
+          },
+        ],
+        "plain-text",
+        "",
+      ) ??
+        Alert.alert(`Sospendi ${label}`, "Confermi?", [
+          { text: "Annulla", style: "cancel" },
+          {
+            text: "Sospendi",
+            style: "destructive",
+            onPress: () => runWith(""),
+          },
+        ]);
+    };
+
+    Alert.alert(
+      "Durata sospensione",
+      "Per quanto tempo vuoi sospendere questo utente?",
+      [
+        { text: "3 giorni", onPress: () => promptReason(3, "3 giorni") },
+        { text: "7 giorni", onPress: () => promptReason(7, "7 giorni") },
+        { text: "30 giorni", onPress: () => promptReason(30, "30 giorni") },
+        {
+          text: "Per sempre",
+          style: "destructive",
+          onPress: () => promptReason(null, "per sempre"),
+        },
+        {
+          text: "Rimuovi sospensione esistente",
+          onPress: () => unsuspendUser(userId),
+        },
+        { text: "Annulla", style: "cancel" },
+      ],
+    );
+  };
+
+  const unsuspendUser = (userId: string) => {
+    Alert.alert(
+      "Rimuovere la sospensione?",
+      "L'utente potrà accedere di nuovo all'app.",
+      [
+        { text: "Annulla", style: "cancel" },
+        {
+          text: "Rimuovi sospensione",
+          onPress: async () => {
+            try {
+              setBusyId(userId);
+              await api.adminUnsuspendUser(userId);
+              Alert.alert("Fatto", "Sospensione rimossa.");
+              await load();
+            } catch (e: any) {
+              Alert.alert("Errore", e?.message || "Operazione fallita");
             } finally {
               setBusyId(null);
             }
@@ -405,6 +513,24 @@ export default function AdminScreen() {
                       </Text>
                     </TouchableOpacity>
                   )}
+                  {r.target_type === "user" && r.target_exists && (
+                    <TouchableOpacity
+                      testID={`action-suspend-${r.report_id}`}
+                      disabled={busyId === r.target_id}
+                      onPress={() => suspendUser(r.target_id)}
+                      style={[styles.actionBtn, styles.actionSuspend]}
+                      activeOpacity={0.85}
+                    >
+                      {busyId === r.target_id ? (
+                        <ActivityIndicator color="#FFF" size="small" />
+                      ) : (
+                        <>
+                          <Ionicons name="time-outline" size={16} color="#FFF" />
+                          <Text style={styles.actionText}>Sospendi</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  )}
                   <TouchableOpacity
                     testID={`action-delete-${r.report_id}`}
                     disabled={busyId === r.report_id}
@@ -604,6 +730,7 @@ const styles = StyleSheet.create({
   },
   actionReview: { backgroundColor: "#10B981" },
   actionDismiss: { backgroundColor: "#FFE600" },
+  actionSuspend: { backgroundColor: "#F97316" },
   actionDelete: { backgroundColor: "#0A0A0A" },
   actionText: { fontWeight: "900", color: "#FFF", fontSize: 12, letterSpacing: 0.3 },
   errorCard: {

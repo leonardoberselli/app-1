@@ -167,6 +167,7 @@ class Group(BaseModel):
     owner_name: str
     owner_picture: Optional[str] = None
     participants: List[dict] = []
+    banned_user_ids: List[str] = Field(default_factory=list)
     created_at: datetime
 
 
@@ -213,6 +214,39 @@ REPORT_REASONS = (
 
 # Threshold at which we log a warning about a heavily-reported target.
 REPORT_ALERT_THRESHOLD = 3
+
+
+# ---------- Admin: user suspension ----------
+# Stored on the user document as:
+#   suspension: {
+#     until: datetime | None,   # None == permanent
+#     reason: str,
+#     at: datetime,
+#     by: str,                  # admin identifier ("admin")
+#   }
+# A suspension is "active" if it exists and either has `until=None` or
+# `until > now`. Expired suspensions are silently ignored by the auth path.
+
+
+class AdminSuspendIn(BaseModel):
+    """Payload for POST /api/admin/users/{user_id}/suspend.
+
+    `days=None` (or omitted) means the ban is permanent. Otherwise it must be
+    a positive integer number of days. `reason` is stored verbatim and is
+    surfaced to the banned user in the 403 error body.
+    """
+
+    days: Optional[int] = Field(default=None, ge=1, le=3650)
+    reason: str = Field(default="", max_length=500)
+
+
+class GroupKickIn(BaseModel):
+    """Payload for POST /api/groups/{group_id}/kick — remove a participant
+    from the group AND prevent them from re-joining. Reason is optional and
+    surfaced to the kicked user."""
+
+    user_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(default="", max_length=200)
 
 
 class ReportCreate(BaseModel):
@@ -325,6 +359,71 @@ async def _lookup_session_user(session_token: str) -> Optional[User]:
     return _user_from_doc(doc)
 
 
+def _active_suspension(user_doc: Optional[dict]) -> Optional[dict]:
+    """Returns the active suspension record for a raw user document, or
+    None if the user is not currently suspended.
+
+    A suspension is *active* if:
+      • `until` is None → permanent ban, or
+      • `until` is a datetime > now (UTC).
+
+    Expired suspensions return None (silently treated as lifted).
+    """
+    if not user_doc:
+        return None
+    susp = user_doc.get("suspension")
+    if not isinstance(susp, dict):
+        return None
+    until = susp.get("until")
+    if until is None:
+        return susp
+    # normalize naive → aware
+    if isinstance(until, datetime) and until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    if isinstance(until, datetime) and until > datetime.now(timezone.utc):
+        # return a normalized copy so callers get a tz-aware datetime
+        out = dict(susp)
+        out["until"] = until
+        return out
+    return None
+
+
+def _suspension_http_exception(susp: dict) -> HTTPException:
+    """Build the 403 raised whenever a suspended user tries to authenticate
+    or hit any authenticated endpoint. Includes structured info the mobile
+    app can render nicely."""
+    until = susp.get("until")
+    until_iso = None
+    if isinstance(until, datetime):
+        until_iso = until.astimezone(timezone.utc).isoformat()
+    reason = (susp.get("reason") or "").strip()
+    if until is None:
+        headline = "Il tuo account è stato sospeso in modo permanente"
+    else:
+        headline = f"Il tuo account è sospeso fino al {until.strftime('%d/%m/%Y')}"
+    detail_text = headline
+    if reason:
+        detail_text += f". Motivo: {reason}"
+    return HTTPException(
+        status_code=403,
+        detail={
+            "message": detail_text,
+            "suspended": True,
+            "until": until_iso,   # ISO 8601 string; null == permanent
+            "reason": reason,
+        },
+    )
+
+
+async def _require_not_suspended(user_id: str) -> None:
+    """Fetch the raw user doc and raise 403 if the account is under an
+    active suspension. Cheap enough to be called on every auth endpoint."""
+    doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "suspension": 1})
+    susp = _active_suspension(doc)
+    if susp:
+        raise _suspension_http_exception(susp)
+
+
 async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing session token")
@@ -334,6 +433,15 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     user = await _lookup_session_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="Sessione scaduta o non valida")
+    # Reject requests coming from a suspended account. We also proactively
+    # kill the session so the client stops attempting subsequent calls.
+    doc = await db.users.find_one(
+        {"user_id": user.user_id}, {"_id": 0, "suspension": 1}
+    )
+    susp = _active_suspension(doc)
+    if susp:
+        await db.user_sessions.delete_many({"user_id": user.user_id})
+        raise _suspension_http_exception(susp)
     return user
 
 
@@ -838,6 +946,12 @@ async def exchange_google_session(payload: GoogleSessionExchange):
         )
 
     # Store the session (7-day sliding window matches Emergent's default).
+    # But first: if the user is currently under an active suspension, we
+    # refuse to mint a session and surface the ban details.
+    fresh = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    susp = _active_suspension(fresh)
+    if susp:
+        raise _suspension_http_exception(susp)
     await db.user_sessions.insert_one(
         {
             "session_token": session_token,
@@ -846,7 +960,6 @@ async def exchange_google_session(payload: GoogleSessionExchange):
             "expires_at": now + SESSION_LIFETIME,
         }
     )
-    fresh = await db.users.find_one({"user_id": user_id}, {"_id": 0})
     return {"session_token": session_token, "user": _user_from_doc(fresh).model_dump(mode="json")}
 
 
@@ -1365,6 +1478,12 @@ async def auth_login(payload: LoginIn, request: Request):
         # Same generic message + timing (dummy hash) to avoid enumeration.
         raise HTTPException(status_code=401, detail="Email o password non corretti")
 
+    # Suspended accounts must not be able to log back in — even with a
+    # correct password.
+    susp = _active_suspension(user)
+    if susp:
+        raise _suspension_http_exception(susp)
+
     token = await _create_session_for(user["user_id"])
     return {
         "session_token": token,
@@ -1547,8 +1666,12 @@ async def auth_apple(payload: AppleSignInIn):
             }
         )
 
-    token = await _create_session_for(user_id)
     fresh = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    # Refuse to issue a session for a suspended user.
+    susp = _active_suspension(fresh)
+    if susp:
+        raise _suspension_http_exception(susp)
+    token = await _create_session_for(user_id)
     return {
         "session_token": token,
         "user": _user_from_doc(fresh).model_dump(mode="json"),
@@ -2002,6 +2125,11 @@ async def join_group(group_id: str, user: User = Depends(get_current_user)):
             )
     if any(p["user_id"] == user.user_id for p in g["participants"]):
         return Group(**g)
+    if user.user_id in (g.get("banned_user_ids") or []):
+        raise HTTPException(
+            status_code=403,
+            detail="Sei stato espulso da questo gruppo dal creatore e non puoi rientrare.",
+        )
     if len(g["participants"]) >= g["max_participants"]:
         raise HTTPException(status_code=400, detail="Gruppo al completo")
     new_part = {"user_id": user.user_id, "name": user.name, "picture": user.picture}
@@ -2025,6 +2153,90 @@ async def leave_group(group_id: str, user: User = Depends(get_current_user)):
         {"$pull": {"participants": {"user_id": user.user_id}}},
     )
     g["participants"] = [p for p in g["participants"] if p["user_id"] != user.user_id]
+    return Group(**g)
+
+
+@api_router.post("/groups/{group_id}/kick", response_model=Group)
+async def kick_participant(
+    group_id: str,
+    payload: GroupKickIn,
+    user: User = Depends(get_current_user),
+):
+    """Owner-only endpoint that removes a participant from a group AND
+    records their `user_id` in the group's `banned_user_ids` list so they
+    cannot re-join. Also purges every chat message the kicked user had
+    posted in that specific group so residue from the offensive behaviour
+    disappears immediately.
+
+    The kicked user gets a system chat message announcing the removal
+    (visible to everyone still in the group) — the reason, if provided,
+    is included."""
+    g = await db.groups.find_one({"group_id": group_id}, {"_id": 0})
+    if not g:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if g["owner_id"] != user.user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Solo il creatore del gruppo può espellere partecipanti.",
+        )
+    target_id = payload.user_id.strip()
+    if not _USER_ID_RE.match(target_id):
+        raise HTTPException(status_code=400, detail="user_id non valido")
+    if target_id == user.user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Non puoi espellere te stesso. Usa 'lascia gruppo' se vuoi uscire.",
+        )
+    if not any(p["user_id"] == target_id for p in g["participants"]):
+        raise HTTPException(status_code=404, detail="Utente non nel gruppo")
+
+    kicked = next(p for p in g["participants"] if p["user_id"] == target_id)
+    banned = list(g.get("banned_user_ids") or [])
+    if target_id not in banned:
+        banned.append(target_id)
+
+    await db.groups.update_one(
+        {"group_id": group_id},
+        {
+            "$pull": {"participants": {"user_id": target_id}},
+            "$set": {"banned_user_ids": banned},
+        },
+    )
+    # Purge kicked user's messages from this group only.
+    await db.messages.delete_many({"group_id": group_id, "user_id": target_id})
+    # Mark any pending report against this user in this group's context as
+    # reviewed — the owner took action.
+    await db.reports.update_many(
+        {"target_type": "user", "target_id": target_id, "status": "pending"},
+        {"$set": {"status": "reviewed"}},
+    )
+
+    # System chat message so remaining participants see what happened.
+    try:
+        sys_msg = {
+            "message_id": f"msg_{uuid.uuid4().hex[:12]}",
+            "group_id": group_id,
+            "user_id": "system__",
+            "user_name": "Sistema",
+            "user_picture": None,
+            "text": (
+                f"{kicked.get('name') or 'Un partecipante'} è stato espulso dal gruppo dal creatore"
+                + (f": {payload.reason.strip()}" if payload.reason.strip() else ".")
+            ),
+            "created_at": _now(),
+        }
+        await db.messages.insert_one(dict(sys_msg))
+        result_sys = Message(**_strip(sys_msg))
+        asyncio.create_task(
+            chat_manager.broadcast(
+                group_id,
+                {"type": "message", "data": result_sys.model_dump(mode="json")},
+            )
+        )
+    except Exception as exc:  # pragma: no cover — best effort
+        logger.warning("kick system message failed: %s", exc)
+
+    g = await db.groups.find_one({"group_id": group_id}, {"_id": 0})
     return Group(**g)
 
 
@@ -2513,6 +2725,101 @@ async def admin_delete_user(user_id: str, _ok: bool = Depends(require_admin)):
     if not u:
         raise HTTPException(status_code=404, detail="Utente non trovato")
     return await _delete_user_cascade(user_id)
+
+
+@api_router.post("/admin/users/{user_id}/suspend")
+async def admin_suspend_user(
+    user_id: str,
+    payload: AdminSuspendIn,
+    _ok: bool = Depends(require_admin),
+):
+    """Suspend a user's ability to log in and use the app.
+
+    * `payload.days=None` → permanent ban.
+    * `payload.days>0`    → temporary ban that auto-lifts after that many days.
+
+    Also revokes every active session so the user is immediately logged out
+    from every device. The account and their data are preserved (unlike
+    `DELETE /admin/users/{user_id}` which wipes everything) so an unsuspend
+    can restore access."""
+    if not _USER_ID_RE.match(user_id):
+        raise HTTPException(status_code=400, detail="user_id non valido")
+    u = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+
+    now = datetime.now(timezone.utc)
+    until = None if payload.days is None else (now + timedelta(days=payload.days))
+    suspension = {
+        "at": now,
+        "until": until,
+        "reason": payload.reason.strip(),
+        "by": "admin",
+    }
+    await db.users.update_one({"user_id": user_id}, {"$set": {"suspension": suspension}})
+    # NOTE: we do NOT delete the sessions eagerly here — keeping them means
+    # the next authenticated call from the suspended user's device hits
+    # `get_current_user`, which reads the fresh `suspension` field and
+    # returns a proper 403 with the ban details (instead of a generic 401
+    # "session expired"). `get_current_user` will then purge the sessions
+    # so subsequent calls no longer round-trip through the auth path.
+    # Any pending reports about the user are considered "actioned".
+    await db.reports.update_many(
+        {"target_type": "user", "target_id": user_id, "status": "pending"},
+        {"$set": {"status": "reviewed"}},
+    )
+
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "suspension": {
+            "at": suspension["at"].isoformat(),
+            "until": suspension["until"].isoformat() if suspension["until"] else None,
+            "reason": suspension["reason"],
+            "by": suspension["by"],
+        },
+    }
+
+
+@api_router.post("/admin/users/{user_id}/unsuspend")
+async def admin_unsuspend_user(user_id: str, _ok: bool = Depends(require_admin)):
+    """Lift any suspension (active or expired) on the user."""
+    if not _USER_ID_RE.match(user_id):
+        raise HTTPException(status_code=400, detail="user_id non valido")
+    u = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    await db.users.update_one({"user_id": user_id}, {"$unset": {"suspension": ""}})
+    return {"ok": True, "user_id": user_id}
+
+
+@api_router.get("/admin/users/{user_id}")
+async def admin_get_user(user_id: str, _ok: bool = Depends(require_admin)):
+    """Small helper for the moderation panel: returns basic user info plus
+    the current suspension state (active/expired/none)."""
+    if not _USER_ID_RE.match(user_id):
+        raise HTTPException(status_code=400, detail="user_id non valido")
+    u = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    susp = _active_suspension(u)
+    return {
+        "user_id": u["user_id"],
+        "email": u.get("email"),
+        "name": u.get("name"),
+        "picture": u.get("picture"),
+        "created_at": (u.get("created_at").isoformat() if isinstance(u.get("created_at"), datetime) else u.get("created_at")),
+        "suspension_active": susp is not None,
+        "suspension": (
+            {
+                "until": susp["until"].isoformat() if susp.get("until") else None,
+                "reason": susp.get("reason") or "",
+                "at": susp["at"].isoformat() if isinstance(susp.get("at"), datetime) else susp.get("at"),
+            }
+            if susp
+            else None
+        ),
+    }
 
 
 # ============================== Health ==============================
