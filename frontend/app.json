@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.barrio.social",
+      "bundleIdentifier": "com.example.barrio",
       "usesAppleSignIn": true,
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Scegli una foto per il tuo profilo",
@@ -24,7 +24,7 @@
         "backgroundColor": "#000"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.barrio.social",
+      "package": "com.example.barrio",
       "permissions": [
         "READ_MEDIA_IMAGES",
         "ACCESS_COARSE_LOCATION",
