@@ -25,6 +25,7 @@ import time
 import ipaddress
 import hashlib
 import secrets as py_secrets
+import hmac
 from collections import defaultdict, deque
 from html import escape
 from html.parser import HTMLParser
@@ -1057,6 +1058,17 @@ _APPLE_AUDIENCES = [
     for a in (os.environ.get("APPLE_AUDIENCES") or "").split(",")
     if a.strip()
 ]
+# SEC-003: Expo Go's own bundle id (host.exp.Exponent) is opt-in via a
+# separate env variable so it can be enabled only in dev/preview. In
+# production we never accept identity tokens minted for Expo Go — those
+# could originate from ANY app running inside Expo Go and would let an
+# attacker log into Barrio using a different app's Apple flow.
+_APPLE_AUDIENCES_DEV = [
+    a.strip()
+    for a in (os.environ.get("APPLE_AUDIENCES_DEV") or "").split(",")
+    if a.strip()
+]
+_ALL_APPLE_AUDIENCES = list(dict.fromkeys(_APPLE_AUDIENCES + _APPLE_AUDIENCES_DEV))
 
 # Password strength: min 8 chars, at least 1 letter and 1 digit.
 _PASSWORD_RE = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{8,128}$")
@@ -1399,42 +1411,54 @@ async def auth_register(payload: RegisterIn, request: Request):
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     now = _now()
     if existing:
-        # If the user has already linked a password, we can't overwrite it —
-        # ask them to log in instead.
+        # SEC-001 fix: never link a password to a pre-existing account (of
+        # any provider) inside /auth/register — that path let attackers hijack
+        # Google/Apple-only accounts by "registering" their email. Users who
+        # already signed in with Google/Apple must instead perform a
+        # password reset (which owns email verification) to add a password.
+        providers = existing.get("auth_providers") or []
         if existing.get("password_hash"):
-            raise HTTPException(status_code=409, detail="Account già registrato: accedi con email e password")
-        # Google/Apple-only account: attach a password to it so the two
-        # providers coexist. Requires the caller to complete verification via
-        # the emailed link before we mark auth_providers += ["password"].
-        user_id = existing["user_id"]
-        await db.users.update_one(
-            {"user_id": user_id},
-            {
-                "$set": {
-                    "password_hash": _pw_hash(payload.password),
-                    "name": existing.get("name") or name,
-                },
-            },
+            raise HTTPException(
+                status_code=409,
+                detail="Account già registrato: accedi con email e password",
+            )
+        if "google" in providers or "apple" in providers:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Questa email è già associata ad un account "
+                    + (
+                        "Google/Apple"
+                        if ("google" in providers and "apple" in providers)
+                        else ("Google" if "google" in providers else "Apple")
+                    )
+                    + ". Accedi con quel provider oppure usa 'Password dimenticata' per impostare una password."
+                ),
+            )
+        # Legacy account without any provider linked → same 409, keeps API
+        # semantics uniform.
+        raise HTTPException(
+            status_code=409,
+            detail="Account già registrato: accedi con email e password",
         )
-    else:
-        user_id = f"user_{uuid.uuid4().hex[:12]}"
-        await db.users.insert_one(
-            {
-                "user_id": user_id,
-                "email": email,
-                "name": name,
-                "picture": None,
-                "gender": None,
-                "age": None,
-                "profile_complete": False,
-                "terms_version": None,
-                "terms_accepted_at": None,
-                "created_at": now,
-                "password_hash": _pw_hash(payload.password),
-                "email_verified": False,
-                "auth_providers": ["password"],
-            }
-        )
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    await db.users.insert_one(
+        {
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "picture": None,
+            "gender": None,
+            "age": None,
+            "profile_complete": False,
+            "terms_version": None,
+            "terms_accepted_at": None,
+            "created_at": now,
+            "password_hash": _pw_hash(payload.password),
+            "email_verified": False,
+            "auth_providers": ["password"],
+        }
+    )
 
     # Send verification email (fire-and-forget so signup latency stays low).
     verify_token = await _issue_auth_token(user_id, "verify_email", timedelta(hours=_VERIFY_HOURS))
@@ -1498,9 +1522,13 @@ async def auth_request_reset(payload: RequestResetIn, request: Request):
         # Silent — we don't want to reveal that the endpoint is hot.
         return {"message": "Se l'account esiste, riceverai un'email con le istruzioni per il reset."}
     email = payload.email.strip().lower()
-    user = await db.users.find_one(
-        {"email": email, "password_hash": {"$ne": None}}, {"_id": 0}
-    )
+    # SEC-001 companion fix: this endpoint must also be reachable for
+    # Google/Apple-only accounts so those users can *legitimately* add a
+    # password (see /auth/password/confirm-reset which appends "password"
+    # to auth_providers). Filtering by `password_hash != None` would have
+    # locked them out and pushed people back to the vulnerable
+    # register-then-hijack flow.
+    user = await db.users.find_one({"email": email}, {"_id": 0})
     if user:
         raw = await _issue_auth_token(user["user_id"], "reset_password", timedelta(minutes=_RESET_MINUTES))
         if _PUBLIC_URL:
@@ -1572,7 +1600,7 @@ async def _apple_jwks_key_for(kid: str) -> Optional[Dict[str, Any]]:
 async def _verify_apple_identity_token(identity_token: str) -> Dict[str, Any]:
     if pyjwt is None:
         raise HTTPException(status_code=500, detail="Apple auth non configurato")
-    if not _APPLE_AUDIENCES:
+    if not _ALL_APPLE_AUDIENCES:
         raise HTTPException(status_code=500, detail="APPLE_AUDIENCES non impostato")
     try:
         unverified = pyjwt.get_unverified_header(identity_token)
@@ -1585,11 +1613,11 @@ async def _verify_apple_identity_token(identity_token: str) -> Dict[str, Any]:
     if not jwk:
         raise HTTPException(status_code=401, detail="Chiave Apple non trovata")
     try:
-        # Try each configured audience — build usually uses the bundle id,
-        # Expo Go uses host.exp.Exponent.
+        # Try each configured audience — production bundle ids first (safer),
+        # then dev audiences (e.g. Expo Go) if any.
         public_key = pyjwt.algorithms.RSAAlgorithm.from_jwk(jwk)
         last_err: Optional[Exception] = None
-        for aud in _APPLE_AUDIENCES:
+        for aud in _ALL_APPLE_AUDIENCES:
             try:
                 claims = pyjwt.decode(
                     identity_token,
@@ -1598,6 +1626,14 @@ async def _verify_apple_identity_token(identity_token: str) -> Dict[str, Any]:
                     audience=aud,
                     issuer="https://appleid.apple.com",
                 )
+                # Warn loudly whenever a dev-only audience is actually used
+                # in the wild — helps catch prod regressions early.
+                if aud in _APPLE_AUDIENCES_DEV:
+                    logger.warning(
+                        "Apple token accepted via DEV audience %r — "
+                        "remove APPLE_AUDIENCES_DEV in production!",
+                        aud,
+                    )
                 return claims
             except Exception as e:  # pragma: no cover
                 last_err = e
@@ -2568,12 +2604,24 @@ class AdminReport(Report):
     target_exists: bool = True
 
 
-async def require_admin(x_admin_secret: Optional[str] = Header(default=None)) -> bool:
+async def require_admin(
+    x_admin_secret: Optional[str] = Header(default=None),
+    request: Request = None,
+) -> bool:
     if not _ADMIN_SECRET:
         # Explicitly refuse admin access when server is misconfigured, rather
         # than silently allowing an empty secret to match.
         raise HTTPException(status_code=503, detail="Admin non configurato sul server")
-    if not x_admin_secret or x_admin_secret.strip() != _ADMIN_SECRET:
+    # Rate-limit by IP to blunt brute-force against the shared secret.
+    ip = "unknown"
+    if request is not None and request.client:
+        ip = request.client.host or "unknown"
+    if not _rate_limit(f"admin:ip:{ip}", limit=20, window_seconds=900):
+        raise HTTPException(status_code=429, detail="Troppi tentativi, riprova tra 15 minuti")
+    supplied = (x_admin_secret or "").strip()
+    # Timing-safe compare so an attacker can't discover the secret one byte
+    # at a time by measuring response time.
+    if not supplied or not hmac.compare_digest(supplied, _ADMIN_SECRET):
         raise HTTPException(status_code=401, detail="Segreto admin non valido")
     return True
 
