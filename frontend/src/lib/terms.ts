@@ -6,11 +6,11 @@
 export const TERMS_VERSION = "2026-06-01";
 export const TERMS_MIN_AGE = 14;
 
-export const TERMS_TEXT = `REGOLAMENTO E LIMITAZIONE DI RESPONSABILITÀ – Barrio
+export const TERMS_TEXT = `REGOLAMENTO E LIMITAZIONE DI RESPONSABILITÀ – Barrio 24
 Versione ${TERMS_VERSION} – valida dal 1 giugno 2026
 
 1. NATURA DEL SERVIZIO
-Barrio è un'applicazione che mette in contatto persone interessate a partecipare ad attività ricreative in gruppo. L'app fornisce solo la piattaforma tecnica: NON organizza, NON supervisiona, NON controlla e NON partecipa in alcun modo agli incontri organizzati tramite i suoi strumenti.
+Barrio 24 è un'applicazione che mette in contatto persone interessate a partecipare ad attività ricreative in gruppo. L'app fornisce solo la piattaforma tecnica: NON organizza, NON supervisiona, NON controlla e NON partecipa in alcun modo agli incontri organizzati tramite i suoi strumenti.
 
 2. ETÀ MINIMA
 L'iscrizione è consentita solo a chi ha compiuto ${TERMS_MIN_AGE} anni. I minorenni (14-17) possono partecipare esclusivamente a gruppi con altri minorenni; i maggiorenni (18+) solo con altri maggiorenni. È vietato dichiarare un'età falsa.
@@ -26,10 +26,10 @@ Sei tu l'unico responsabile:
 L'app utilizza la posizione del tuo dispositivo per mostrarti gruppi vicini. Fornendo questo dato accetti espressamente che l'app lo utilizzi per la funzionalità del feed. Puoi disattivare la geolocalizzazione in qualsiasi momento dalle impostazioni del sistema operativo o dal tuo profilo, con conseguente riduzione delle funzionalità.
 
 5. INCONTRI DI PERSONA – PUNTO CRITICO
-Barrio facilita solo il contatto virtuale. Qualsiasi incontro dal vivo avviene SOTTO LA TUA ESCLUSIVA RESPONSABILITÀ.
+Barrio 24 facilita solo il contatto virtuale. Qualsiasi incontro dal vivo avviene SOTTO LA TUA ESCLUSIVA RESPONSABILITÀ.
 Comprendi e accetti che:
 • gli altri utenti sono SCONOSCIUTI e le informazioni che forniscono potrebbero essere FALSE;
-• Barrio NON verifica identità, fedina penale, intenzioni o onestà di alcun utente;
+• Barrio 24 NON verifica identità, fedina penale, intenzioni o onestà di alcun utente;
 • incontrare persone in luoghi appartati, isolati o privati può essere PERICOLOSO;
 • spetta a te adottare tutte le precauzioni: incontri in luoghi pubblici, avvisare amici/familiari, condividere la posizione con persone di fiducia, allontanarti immediatamente da situazioni sospette.
 
@@ -37,7 +37,7 @@ Comprendi e accetti che:
 Se subisci molestie, minacce, insulti, ricatti o comportamenti inappropriati:
 • usa subito il pulsante SEGNALA (bandierina 🚩);
 • se ravvisi un reato, contatta immediatamente le AUTORITÀ COMPETENTI (Polizia Postale, Carabinieri, 112).
-Barrio esamina le segnalazioni ma NON garantisce alcuna moderazione in tempo reale né la rimozione istantanea dei contenuti. Non siamo un servizio di emergenza.
+Barrio 24 esamina le segnalazioni ma NON garantisce alcuna moderazione in tempo reale né la rimozione istantanea dei contenuti. Non siamo un servizio di emergenza.
 
 7. LIMITAZIONE DI RESPONSABILITÀ DEL PROPRIETARIO
 Nella misura massima consentita dalla legge, IL PROPRIETARIO, GLI SVILUPPATORI E CHIUNQUE GESTISCA GROUPUP NON SONO RESPONSABILI per:
@@ -47,10 +47,10 @@ Nella misura massima consentita dalla legge, IL PROPRIETARIO, GLI SVILUPPATORI E
 • inesattezze o falsità delle informazioni fornite dagli utenti;
 • interruzioni, malfunzionamenti, perdite di dati o indisponibilità del servizio;
 • decisioni prese dall'utente sulla base delle informazioni ricavate dall'app.
-Utilizzi Barrio VOLONTARIAMENTE, A TUO RISCHIO E PERICOLO, e MANLEVI il proprietario da ogni pretesa, richiesta di risarcimento o azione legale che possa derivare, direttamente o indirettamente, dall'utilizzo dell'app.
+Utilizzi Barrio 24 VOLONTARIAMENTE, A TUO RISCHIO E PERICOLO, e MANLEVI il proprietario da ogni pretesa, richiesta di risarcimento o azione legale che possa derivare, direttamente o indirettamente, dall'utilizzo dell'app.
 
 8. ATTIVITÀ VIETATE
-È vietato utilizzare Barrio per: adescamento di minori, prostituzione, spaccio, terrorismo, apologia di reato, incitamento all'odio, truffe, spam, diffusione di malware, violazione di diritti d'autore o qualsiasi altra attività illecita. La violazione comporta la cancellazione immediata dell'account e la segnalazione alle autorità.
+È vietato utilizzare Barrio 24 per: adescamento di minori, prostituzione, spaccio, terrorismo, apologia di reato, incitamento all'odio, truffe, spam, diffusione di malware, violazione di diritti d'autore o qualsiasi altra attività illecita. La violazione comporta la cancellazione immediata dell'account e la segnalazione alle autorità.
 
 9. CANCELLAZIONE DELL'ACCOUNT
 Puoi eliminare in qualsiasi momento il tuo account e tutti i tuoi dati dalla scheda Profilo → "Elimina account". L'operazione è irreversibile.
@@ -60,6 +60,6 @@ Toccando "Accetto e continuo" dichiari di:
 • aver LETTO E COMPRESO integralmente il presente regolamento;
 • avere almeno ${TERMS_MIN_AGE} anni;
 • assumerti la PIENA RESPONSABILITÀ dell'utilizzo dell'app, dei contenuti che pubblichi e degli incontri che decidi di organizzare o accettare;
-• MANLEVARE il proprietario di Barrio da ogni responsabilità civile, penale o amministrativa collegata all'uso dell'app.
+• MANLEVARE il proprietario di Barrio 24 da ogni responsabilità civile, penale o amministrativa collegata all'uso dell'app.
 
 Se non accetti anche un solo punto di quanto sopra, NON usare l'app.`;

@@ -176,7 +176,7 @@ export default function LoginScreen() {
           <View style={styles.hero}>
             <Text style={styles.emoji}>👥</Text>
             <Text style={styles.kicker}>BENVENUTO/A SU</Text>
-            <Text style={styles.brand}>Barrio</Text>
+            <Text style={styles.brand}>Barrio 24</Text>
             <Text style={styles.subtitle}>
               Crea o unisciti a gruppi di attività vicino a te.
             </Text>
@@ -432,7 +432,7 @@ export default function LoginScreen() {
       >
         <SafeAreaView style={styles.modalContainer} edges={["top", "bottom"]}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Regolamento Barrio</Text>
+            <Text style={styles.modalTitle}>Regolamento Barrio 24</Text>
             <TouchableOpacity onPress={() => setTermsOpen(false)} style={{ padding: 4 }}>
               <Ionicons name="close" size={24} color="#0A0A0A" />
             </TouchableOpacity>

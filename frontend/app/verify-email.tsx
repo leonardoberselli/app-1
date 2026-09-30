@@ -48,7 +48,7 @@ export default function VerifyEmailScreen() {
             <Text style={styles.emoji}>🎉</Text>
             <Text style={styles.title}>Email verificata!</Text>
             <Text style={styles.subtitle}>
-              Grazie {user?.name || ""}, il tuo account Barrio è ora
+              Grazie {user?.name || ""}, il tuo account Barrio 24 è ora
               completamente attivo.
             </Text>
             <TouchableOpacity

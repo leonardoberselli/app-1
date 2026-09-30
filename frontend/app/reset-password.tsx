@@ -96,7 +96,7 @@ export default function ResetPasswordScreen() {
             <Text style={styles.emoji}>🔐</Text>
             <Text style={styles.title}>Nuova password</Text>
             <Text style={styles.subtitle}>
-              Scegli una nuova password per il tuo account Barrio.
+              Scegli una nuova password per il tuo account Barrio 24.
             </Text>
           </View>
 
