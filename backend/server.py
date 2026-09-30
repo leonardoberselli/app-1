@@ -2879,6 +2879,14 @@ async def root():
 
 # ============================== App setup ==============================
 
+# Health check endpoint for Kubernetes liveness/readiness probes.
+# Must be exposed at both root and /api paths since ingress may route either way.
+@app.get("/health")
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok"}
+
+
 app.include_router(api_router)
 
 app.add_middleware(
